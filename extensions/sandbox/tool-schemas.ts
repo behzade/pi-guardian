@@ -50,26 +50,67 @@ export const BashParams = Type.Object(
 	{ additionalProperties: false },
 );
 
-export const BackgroundJobParams = Type.Union([
-	Type.Object({
-		action: Type.Literal("start"),
-		name: Type.String({ description: "Unique job name starting with pi-" }),
-		command: Type.String({ description: "Shell command to run in the background" }),
-		cwd: Type.Optional(Type.String({ description: "Working directory inside this workspace" })),
-	}, { additionalProperties: false }),
-	Type.Object({ action: Type.Literal("list") }, { additionalProperties: false }),
-	Type.Object({ action: Type.Literal("status"), name: Type.String() }, { additionalProperties: false }),
-	Type.Object({
-		action: Type.Literal("read"),
-		name: Type.String(),
-		lines: Type.Optional(Type.Integer({ minimum: 1, maximum: 10_000 })),
-	}, { additionalProperties: false }),
-	Type.Object({ action: Type.Literal("write"), name: Type.String(), text: Type.String() }, { additionalProperties: false }),
-	Type.Object({ action: Type.Literal("line"), name: Type.String(), text: Type.String() }, { additionalProperties: false }),
-	Type.Object({
-		action: Type.Literal("keys"),
-		name: Type.String(),
-		keys: Type.Array(Type.String(), { minItems: 1, maxItems: 20 }),
-	}, { additionalProperties: false }),
-	Type.Object({ action: Type.Literal("stop"), name: Type.String() }, { additionalProperties: false }),
-], { type: "object" });
+const BackgroundJobAction = Type.Union([
+	Type.Literal("start"),
+	Type.Literal("list"),
+	Type.Literal("status"),
+	Type.Literal("read"),
+	Type.Literal("write"),
+	Type.Literal("line"),
+	Type.Literal("keys"),
+	Type.Literal("stop"),
+]);
+
+export const BackgroundJobParams = Type.Object(
+	{
+		action: BackgroundJobAction,
+		name: Type.Optional(Type.String({ description: "Required for every action except list; must start with pi-" })),
+		command: Type.Optional(Type.String({ description: "Required when action is start" })),
+		cwd: Type.Optional(Type.String({ description: "Working directory inside this workspace; only used by start" })),
+		lines: Type.Optional(Type.Integer({ description: "Only used by read", minimum: 1, maximum: 10_000 })),
+		text: Type.Optional(Type.String({ description: "Required when action is write or line" })),
+		keys: Type.Optional(Type.Array(Type.String(), {
+			description: "Required when action is keys",
+			minItems: 1,
+			maxItems: 20,
+		})),
+	},
+	{ additionalProperties: false },
+);
+
+export type BackgroundJobInput =
+	| { action: "start"; name: string; command: string; cwd?: string }
+	| { action: "list" }
+	| { action: "status" | "stop"; name: string }
+	| { action: "read"; name: string; lines?: number }
+	| { action: "write" | "line"; name: string; text: string }
+	| { action: "keys"; name: string; keys: string[] };
+
+export function validateBackgroundJobParams(params: {
+	action: BackgroundJobInput["action"];
+	name?: string;
+	command?: string;
+	cwd?: string;
+	lines?: number;
+	text?: string;
+	keys?: string[];
+}): BackgroundJobInput | string {
+	if (params.action === "list") return { action: "list" };
+	if (params.name === undefined) return `Background job action ${params.action} requires name.`;
+	if (params.action === "start") {
+		if (params.command === undefined) return "Background job action start requires command.";
+		return { action: "start", name: params.name, command: params.command, ...(params.cwd === undefined ? {} : { cwd: params.cwd }) };
+	}
+	if (params.action === "read") {
+		return { action: "read", name: params.name, ...(params.lines === undefined ? {} : { lines: params.lines }) };
+	}
+	if (params.action === "write" || params.action === "line") {
+		if (params.text === undefined) return `Background job action ${params.action} requires text.`;
+		return { action: params.action, name: params.name, text: params.text };
+	}
+	if (params.action === "keys") {
+		if (params.keys === undefined) return "Background job action keys requires keys.";
+		return { action: "keys", name: params.name, keys: params.keys };
+	}
+	return { action: params.action, name: params.name };
+}

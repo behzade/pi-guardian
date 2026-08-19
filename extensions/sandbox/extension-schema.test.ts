@@ -3,15 +3,31 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerSandbox from "./index.ts";
-import { BackgroundJobParams } from "./tool-schemas.ts";
+import { BackgroundJobParams, validateBackgroundJobParams } from "./tool-schemas.ts";
 
 const indexSource = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 const schemaSource = readFileSync(new URL("./tool-schemas.ts", import.meta.url), "utf8");
 
-test("background jobs expose an OpenAI-compatible object root", () => {
-	const schema = BackgroundJobParams as { type?: unknown; anyOf?: unknown };
+test("background jobs expose a provider-compatible object schema", () => {
+	const schema = BackgroundJobParams as {
+		type?: unknown;
+		anyOf?: unknown;
+		properties?: { action?: { anyOf?: Array<{ type?: unknown }> } };
+	};
 	assert.equal(schema.type, "object");
-	assert.ok(Array.isArray(schema.anyOf));
+	assert.equal(schema.anyOf, undefined);
+	assert.ok(schema.properties?.action?.anyOf?.length);
+	assert.ok(schema.properties?.action?.anyOf?.every((variant) => variant.type === "string"));
+});
+
+test("background jobs validate action-specific required fields before execution", () => {
+	assert.equal(validateBackgroundJobParams({ action: "start", name: "pi-test" }), "Background job action start requires command.");
+	assert.equal(validateBackgroundJobParams({ action: "read" }), "Background job action read requires name.");
+	assert.equal(validateBackgroundJobParams({ action: "keys", name: "pi-test" }), "Background job action keys requires keys.");
+	assert.deepEqual(
+		validateBackgroundJobParams({ action: "start", name: "pi-test", command: "sleep 1" }),
+		{ action: "start", name: "pi-test", command: "sleep 1" },
+	);
 });
 
 test("bash and background jobs cannot request per-command permissions", () => {

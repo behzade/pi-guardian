@@ -59,6 +59,7 @@ import {
 	BackgroundJobParams,
 	BashParams,
 	RequestAccessParams,
+	validateBackgroundJobParams,
 } from "./tool-schemas.ts";
 import {
 	activateProjectPolicy,
@@ -264,20 +265,22 @@ export default function (pi: ExtensionAPI) {
 		parameters: BackgroundJobParams,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			if ("name" in params && !isValidBackgroundJobName(params.name)) {
+			const validated = validateBackgroundJobParams(params);
+			if (typeof validated === "string") return toolError(validated);
+			if ("name" in validated && !isValidBackgroundJobName(validated.name)) {
 				return toolError("Job names must start with pi- and use only letters, digits, dots, underscores, or hyphens.");
 			}
 			if (sandboxState.kind !== "ready" || !backgroundJobs) return toolError("The native sandbox is not ready.");
 			try {
 				let output: string;
-				if (params.action === "start") {
-					const cwd = resolvePermissionPath(params.cwd ?? ctx.cwd, ctx.cwd);
+				if (validated.action === "start") {
+					const cwd = resolvePermissionPath(validated.cwd ?? ctx.cwd, ctx.cwd);
 					if (!isInside(canonicalize(ctx.cwd), cwd)) throw new Error("Background jobs must start inside the current workspace.");
 					if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`Background job directory does not exist: ${cwd}`);
 					const projectAtStart = revalidateProject();
 					output = await backgroundJobs.start({
-						name: params.name,
-						command: params.command,
+						name: validated.name,
+						command: validated.command,
 						cwd,
 						config: projectAtStart.config,
 						permissions: projectAtStart.filesystem,
@@ -285,14 +288,14 @@ export default function (pi: ExtensionAPI) {
 						networkHosts: networkHosts(projectAtStart),
 						allowLocalBinding: projectAtStart.allowLocalBinding,
 					}, signal);
-				} else if (params.action === "list") output = backgroundJobs.list();
-				else if (params.action === "status") output = backgroundJobs.status(params.name);
-				else if (params.action === "read") output = modelVisibleBackgroundJobOutput("read", backgroundJobs.read(params.name, params.lines ?? 200));
-				else if (params.action === "write") output = backgroundJobs.write(params.name, Buffer.from(params.text));
-				else if (params.action === "line") output = backgroundJobs.write(params.name, Buffer.from(`${params.text}\n`));
-				else if (params.action === "keys") output = backgroundJobs.write(params.name, backgroundKeyBytes(params.keys));
-				else output = await backgroundJobs.stop(params.name);
-				return { content: [{ type: "text", text: output || "Done" }], details: { action: params.action } };
+				} else if (validated.action === "list") output = backgroundJobs.list();
+				else if (validated.action === "status") output = backgroundJobs.status(validated.name);
+				else if (validated.action === "read") output = modelVisibleBackgroundJobOutput("read", backgroundJobs.read(validated.name, validated.lines ?? 200));
+				else if (validated.action === "write") output = backgroundJobs.write(validated.name, Buffer.from(validated.text));
+				else if (validated.action === "line") output = backgroundJobs.write(validated.name, Buffer.from(`${validated.text}\n`));
+				else if (validated.action === "keys") output = backgroundJobs.write(validated.name, backgroundKeyBytes(validated.keys));
+				else output = await backgroundJobs.stop(validated.name);
+				return { content: [{ type: "text", text: output || "Done" }], details: { action: validated.action } };
 			} catch (error) {
 				return toolError(errorMessage(error));
 			}
