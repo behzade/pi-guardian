@@ -64,7 +64,9 @@ impl HardPolicy {
         broker: &Path,
         development_cache: Option<&Path>,
     ) -> Result<Self, String> {
-        let mut policy = Self::base_for_paths(home, broker, development_cache);
+        let policy = Self::base_for_paths(home, broker, development_cache);
+        #[cfg(target_os = "macos")]
+        let mut policy = policy;
         #[cfg(target_os = "macos")]
         for helper in crate::conceal::helper_paths()? {
             push_path_denies(

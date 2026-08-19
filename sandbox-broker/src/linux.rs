@@ -811,6 +811,7 @@ fn seccomp_file() -> Result<File, String> {
 /// itself may connect to the one host proxy socket. The user command receives a
 /// seccomp filter that blocks AF_UNIX, so it cannot reuse this launcher to reach
 /// other host services. AF_INET stays inside the isolated namespace.
+#[allow(unsafe_code)]
 pub fn run_proxy_launcher(arguments: &[String]) -> Result<i32, String> {
     let separator = arguments
         .iter()
@@ -870,6 +871,7 @@ pub fn run_proxy_launcher(arguments: &[String]) -> Result<i32, String> {
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(1)))
 }
 
+#[allow(unsafe_code)]
 fn ensure_loopback_up() -> Result<(), String> {
     let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
     if fd < 0 {
@@ -904,6 +906,7 @@ fn ensure_loopback_up() -> Result<(), String> {
     Ok(())
 }
 
+#[allow(unsafe_code)]
 fn install_proxy_user_seccomp(allow_local_binding: bool) -> Result<(), String> {
     let errno = SECCOMP_RET_ERRNO | u32::try_from(libc::EPERM).expect("EPERM is positive");
     let mut program = vec![
