@@ -39,6 +39,15 @@ test("profile maps exact filesystem scopes and blocks network by default", () =>
 	assert.deepEqual(profile.network.allow_domain, []);
 });
 
+test("Linux delegates overlapping denies to the mount layer while macOS keeps Seatbelt denies", () => {
+	const value = request({ mode: "blocked" });
+	value.policy.denies = [{ access: "read_write", pattern: "/work/.env", scope: "file" }];
+	const linux = buildNonoProfile(value, "linux") as { filesystem: { deny: string[] } };
+	const macos = buildNonoProfile(value, "darwin") as { filesystem: { deny: string[] } };
+	assert.deepEqual(linux.filesystem.deny, []);
+	assert.deepEqual(macos.filesystem.deny, ["/work/.env"]);
+});
+
 test("profile maps exact hosts without enabling unrestricted network", () => {
 	const profile = buildNonoProfile(request({
 		mode: "proxy",

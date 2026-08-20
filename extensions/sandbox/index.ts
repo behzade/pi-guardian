@@ -78,6 +78,7 @@ import {
 } from "./project-policy.ts";
 
 const PACKAGED_NONO_PATH = "@NONO@/bin/nono";
+const PACKAGED_BWRAP_PATH = "@BWRAP@";
 
 function readGlobalConfig(): NativeSandboxConfig {
 	const path = resolve(homedir(), ".config", "guardian", "sandbox.json");
@@ -425,10 +426,10 @@ export default function (pi: ExtensionAPI) {
 			ensureDevelopmentCacheDirectories(activeProject.config.developmentCache);
 			if (process.platform !== "darwin" && process.platform !== "linux") throw new Error("the native sandbox supports macOS and Linux only");
 			const nonoPath = machineConfig.nonoPath ?? PACKAGED_NONO_PATH;
-			const client = await NonoClient.start(nonoPath);
+			const client = await NonoClient.start(nonoPath, PACKAGED_BWRAP_PATH);
 			if (generation !== sessionGeneration) { await client.shutdown(); return; }
 			brokerClient = client;
-			backgroundJobs = new NativeBackgroundJobs(nonoPath);
+			backgroundJobs = new NativeBackgroundJobs(nonoPath, PACKAGED_BWRAP_PATH);
 			sandboxState = { kind: "ready", config: activeProject.config, machineConfig };
 			const backendLabel = `nono ${process.platform === "linux" ? "Landlock" : "Seatbelt"}`;
 			ctx.ui.setStatus("sandbox", ctx.ui.theme.fg("accent", `🔒 ${backendLabel}`));

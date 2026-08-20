@@ -73,6 +73,7 @@ export const DEFAULT_CONFIG: Required<
 		],
 		allowWrite: [".", ":tmpdir", ":slash_tmp"],
 		denyWrite: [
+			".git",
 			".guardian",
 			".pi",
 			"**/.env",

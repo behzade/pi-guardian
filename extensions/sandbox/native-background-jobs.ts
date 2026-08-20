@@ -42,11 +42,15 @@ interface StartOptions {
 
 export class NativeBackgroundJobs {
 	readonly #nonoPath: string;
+	readonly #bwrapPath: string;
 	readonly #jobs = new Map<string, NativeJob>();
 	readonly #scope = Scope.makeUnsafe();
 	#closed = false;
 
-	constructor(nonoPath: string) { this.#nonoPath = nonoPath; }
+	constructor(nonoPath: string, bwrapPath: string) {
+		this.#nonoPath = nonoPath;
+		this.#bwrapPath = bwrapPath;
+	}
 
 	readonly startEffect = Effect.fn("NativeBackgroundJobs.start")(function* (this: NativeBackgroundJobs, options: StartOptions) {
 		if (this.#closed) return yield* Effect.fail(jobError("background jobs are shut down"));
@@ -55,7 +59,7 @@ export class NativeBackgroundJobs {
 
 		const manager = this;
 		const client = yield* Effect.tryPromise({
-			try: () => NonoClient.start(manager.#nonoPath),
+			try: () => NonoClient.start(manager.#nonoPath, manager.#bwrapPath),
 			catch: jobError,
 		});
 		const request = yield* Effect.try({

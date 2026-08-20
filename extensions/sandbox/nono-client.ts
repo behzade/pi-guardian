@@ -18,6 +18,7 @@ import type {
 	BrokerExecResult,
 	BrokerFilesystemRight,
 } from "./broker-client.ts";
+import { buildLinuxDenyLaunch } from "./linux-deny-layer.ts";
 
 const READY_TIMEOUT_MS = 10_000;
 const SHUTDOWN_GRACE_MS = 500;
@@ -47,17 +48,20 @@ interface PendingProcess {
 
 export class NonoClient {
 	readonly #path: string;
+	readonly #bwrapPath: string;
 	readonly #pending = new Map<string, PendingProcess>();
 	#closed = false;
 
-	private constructor(path: string) {
+	private constructor(path: string, bwrapPath: string) {
 		this.#path = path;
+		this.#bwrapPath = bwrapPath;
 	}
 
-	static async start(path: string): Promise<NonoClient> {
+	static async start(path: string, bwrapPath: string): Promise<NonoClient> {
 		accessSync(path, constants.X_OK);
+		if (process.platform === "linux") accessSync(bwrapPath, constants.X_OK);
 		await checkNono(path);
-		return new NonoClient(path);
+		return new NonoClient(path, bwrapPath);
 	}
 
 	readonly execEffect = (
@@ -92,7 +96,7 @@ export class NonoClient {
 		}
 
 		return new Promise((resolve, reject) => {
-			const child = spawn(this.#path, [
+			const nonoArgs = [
 				"--silent",
 				"run",
 				"--profile",
@@ -100,7 +104,17 @@ export class NonoClient {
 				"--",
 				request.command.program,
 				...request.command.args,
-			], {
+			];
+			const launch = process.platform === "linux"
+				? buildLinuxDenyLaunch(
+						this.#bwrapPath,
+						this.#path,
+						nonoArgs,
+						request,
+						profileDirectory,
+					)
+				: { program: this.#path, args: nonoArgs };
+			const child = spawn(launch.program, launch.args, {
 				cwd: request.cwd,
 				env: request.env,
 				stdio: ["pipe", "pipe", "pipe"],
@@ -182,7 +196,10 @@ export class NonoClient {
 	}
 }
 
-export function buildNonoProfile(request: BrokerExecRequest): Record<string, unknown> {
+export function buildNonoProfile(
+	request: BrokerExecRequest,
+	platform: NodeJS.Platform = process.platform,
+): Record<string, unknown> {
 	const rights = [...request.policy.base_rights, ...request.policy.grants];
 	const filesystem = {
 		allow: rightPaths(rights, "write", "tree"),
@@ -190,7 +207,9 @@ export function buildNonoProfile(request: BrokerExecRequest): Record<string, unk
 		allow_file: rightPaths(rights, "write", "file"),
 		read_file: rightPaths(rights, "read", "file"),
 		unix_socket: [...request.policy.unix_socket_roots].sort(),
-		deny: [...new Set(request.policy.denies.map((deny) => deny.pattern))].sort(),
+		deny: platform === "linux"
+			? []
+			: [...new Set(request.policy.denies.map((deny) => deny.pattern))].sort(),
 	};
 	const network = request.policy.network;
 	const allowedHosts = network.mode === "proxy" ? (network.allowed_hosts ?? []) : [];
@@ -208,12 +227,12 @@ export function buildNonoProfile(request: BrokerExecRequest): Record<string, unk
 			block: allowedHosts.length === 0,
 			allow_domain: allowedHosts,
 			...(allowLocal
-				? process.platform === "linux"
+				? platform === "linux"
 					? { open_port: [0], open_port_range: [[1, 65_535]] }
 					: { open_port: [0] }
 				: {}),
 		},
-		...(allowLocal && process.platform === "darwin"
+		...(allowLocal && platform === "darwin"
 			? { unsafe_macos_seatbelt_rules: MACOS_LOCAL_NETWORK_RULES }
 			: {}),
 	};

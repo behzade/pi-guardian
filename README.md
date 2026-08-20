@@ -4,10 +4,12 @@ Guardian is a Pi policy adapter backed by [nono](https://github.com/nolabs-ai/no
 It keeps explicit project approvals and exact filesystem/network rights while
 nono applies the OS sandbox:
 
-- Linux: Landlock and nono's supervised network proxy;
+- Linux: Landlock, nono's supervised network proxy, and a fixed Bubblewrap
+  mount layer only for deny-over-allow rules Landlock cannot represent;
 - macOS: Seatbelt and nono's supervised network proxy.
 
-The previous custom Bubblewrap/Seatbelt broker is no longer packaged or used.
+The previous custom broker and root filesystem scanner are no longer packaged
+or used.
 
 ## Policy
 
@@ -45,8 +47,14 @@ maps:
 - macOS `network_local` to nono's port-zero support plus reviewed localhost
   Seatbelt rules.
 
-The packaged extension uses the fixed nono executable supplied by Nix; it does
-not search `PATH`.
+Linux Landlock is additive and cannot subtract `.env`, key, or control paths
+from an allowed workspace. Guardian therefore expands only deny globs beneath
+their static non-root directories and mounts existing denied paths inaccessible
+or read-only before launching nono. It does not scan `/` or follow directory
+symlinks. Nono still owns all grants and network enforcement.
+
+The packaged extension uses fixed nono and Bubblewrap executables supplied by
+Nix; it does not search `PATH` for either executable.
 
 ## Checks
 
