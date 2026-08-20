@@ -50,6 +50,8 @@ export function buildLinuxDenyLaunch(
 		"--bind",
 		"/",
 		"/",
+		"--dev",
+		"/dev",
 		"--proc",
 		"/proc",
 	];

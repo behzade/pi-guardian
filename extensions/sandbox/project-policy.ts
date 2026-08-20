@@ -349,6 +349,10 @@ function activateFilesystemRight(
 	const lexical = expandPortablePath(right.path, cwd);
 	assertNoExistingSymlink(right.path, cwd);
 	const actual = canonicalize(lexical);
+	const projectRoot = right.access === "write" ? projectControlRoot(lexical, cwd) : undefined;
+	if (projectRoot) {
+		throw new Error(`Project policy cannot grant sandboxed writes to project ${projectRoot.endsWith(".guardian") ? ".guardian" : ".pi"}`);
+	}
 	const gitRoot = right.access === "write" ? gitControlRoot(lexical, cwd) : undefined;
 	const explicitGitRoot = gitRoot !== undefined && actual === canonicalize(gitRoot);
 	if (
@@ -368,10 +372,6 @@ function activateFilesystemRight(
 		}
 	}
 	if (right.access === "write") {
-		const projectRoot = projectControlRoot(lexical, cwd);
-		if (projectRoot) {
-			throw new Error(`Project policy cannot grant sandboxed writes to project ${projectRoot.endsWith(".guardian") ? ".guardian" : ".pi"}`);
-		}
 		if (gitRoot && isControlRootSymlink(gitRoot)) {
 			throw new Error(`Project policy cannot grant a symlinked control root: ${gitRoot}`);
 		}

@@ -212,7 +212,7 @@ function denyRules(
 		permission.directory &&
 		deny.access === "write" &&
 		deny.scope !== "glob" &&
-		(resolve(deny.pattern) === resolve(permission.path) || resolve(deny.pattern).startsWith(`${resolve(permission.path)}/`)),
+		resolve(deny.pattern) === resolve(permission.path),
 	));
 }
 
