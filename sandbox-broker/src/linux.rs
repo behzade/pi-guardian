@@ -1,12 +1,14 @@
 //! Linux Bubblewrap policy and launcher preparation.
 //!
-//! Adapted from OpenAI Codex commit
+//! Adapted from `OpenAI` Codex commit
 //! `65ae4c26e088913176a50d6daeb742d00942caee`, chiefly
 //! `codex-rs/linux-sandbox/src/{bwrap.rs,landlock.rs,linux_run_main.rs}`.
-//! Pi uses a compile-time fixed Bubblewrap path. Blocked commands receive a
-//! small reviewed seccomp filter. Proxied commands re-enter this binary only
-//! inside their private network namespace to bridge isolated loopback to one
-//! validated host proxy socket.
+//! Capability dropping is adapted from Eric Traut's `OpenAI` Codex commit
+//! `632420e67af6d04bbb5faa2aaea958f1a265fcf8` in `bwrap.rs` and
+//! `linux_run_main.rs`. Pi uses a compile-time fixed Bubblewrap path. Blocked
+//! commands receive a small reviewed seccomp filter. Proxied commands re-enter
+//! this binary only inside their private network namespace to bridge isolated
+//! loopback to one validated host proxy socket.
 
 #![cfg(target_os = "linux")]
 
@@ -15,7 +17,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::FileTypeExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -42,8 +44,9 @@ const MAX_SCAN_DEPTH: usize = 64;
 const MAX_SCAN_DURATION: Duration = Duration::from_secs(30);
 const SCAN_DEADLINE_CHECK_INTERVAL: usize = 1_024;
 const PROTECTED_METADATA_NAMES: [&str; 2] = [".git", ".pi"];
+const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
 pub const PROXY_LOOPBACK_PORT: u16 = 31_128;
-const PROXY_LAUNCHER_PATH: &str = "/tmp/.pi-sandbox-network-launcher";
+const SANDBOX_LAUNCHER_PATH: &str = "/tmp/.pi-sandbox-launcher";
 
 const BPF_LD_W_ABS: u16 = 0x20;
 const BPF_JMP_JEQ_K: u16 = 0x15;
@@ -82,6 +85,11 @@ impl Drop for SyntheticDirectory {
 }
 
 /// Builds a fail-closed Bubblewrap invocation for one validated command.
+///
+/// # Errors
+///
+/// Returns an error when policy scanning, mount preparation, launcher setup,
+/// or Bubblewrap argument construction cannot preserve the requested policy.
 pub fn prepare(request: &ValidatedExec, command: &[String]) -> Result<PreparedLaunch, String> {
     if !request.unix_socket_roots.is_empty() {
         return Err(
@@ -132,19 +140,17 @@ pub fn prepare(request: &ValidatedExec, command: &[String]) -> Result<PreparedLa
         } => (true, Some(unix_socket.clone()), *allow_local_binding),
     };
     let seccomp = (!network_enabled).then(seccomp_file).transpose()?;
-    let launcher = network_enabled
-        .then(|| {
-            let file = File::open(std::env::current_exe().map_err(|error| error.to_string())?)
-                .map_err(|error| format!("cannot open network launcher: {error}"))?;
-            make_inheritable(&file, "network launcher")?;
-            Ok::<File, String>(file)
-        })
-        .transpose()?;
+    let launcher = File::open(std::env::current_exe().map_err(|error| error.to_string())?)
+        .map_err(|error| format!("cannot open sandbox launcher: {error}"))?;
+    make_inheritable(&launcher, "sandbox launcher")?;
 
     // Create only normalized write targets after every read-only policy scan
     // has succeeded, so a rejected request leaves no approved-path artifact.
     create_missing_write_targets(&writable)?;
-    let mut args = base_args();
+    // The trusted network launcher needs CAP_NET_ADMIN only long enough to
+    // bring up private loopback. It drops and verifies all capabilities before
+    // any user command starts. Other commands are dropped by Bubblewrap itself.
+    let mut args = base_args(!network_enabled);
     for right in &writable {
         ensure_existing_type(right)?;
         push_mount(&mut args, "--bind", &right.path, &right.path);
@@ -176,13 +182,11 @@ pub fn prepare(request: &ValidatedExec, command: &[String]) -> Result<PreparedLa
     }
     // Install the launcher after parent write mounts so a writable `/tmp`
     // cannot hide or replace this final read-only file mount.
-    if let Some(launcher) = &launcher {
-        args.extend([
-            "--ro-bind-data".to_owned(),
-            launcher.as_raw_fd().to_string(),
-            PROXY_LAUNCHER_PATH.to_owned(),
-        ]);
-    }
+    args.extend([
+        "--ro-bind-data".to_owned(),
+        launcher.as_raw_fd().to_string(),
+        SANDBOX_LAUNCHER_PATH.to_owned(),
+    ]);
 
     if let Some(seccomp) = &seccomp {
         args.push("--seccomp".to_owned());
@@ -193,7 +197,7 @@ pub fn prepare(request: &ValidatedExec, command: &[String]) -> Result<PreparedLa
     args.push("--".to_owned());
     if network_enabled {
         args.extend([
-            PROXY_LAUNCHER_PATH.to_owned(),
+            SANDBOX_LAUNCHER_PATH.to_owned(),
             "__linux_proxy_launch".to_owned(),
             proxy_socket
                 .as_ref()
@@ -205,12 +209,18 @@ pub fn prepare(request: &ValidatedExec, command: &[String]) -> Result<PreparedLa
             },
             "--".to_owned(),
         ]);
+    } else {
+        args.extend([
+            SANDBOX_LAUNCHER_PATH.to_owned(),
+            "__linux_sandbox_launch".to_owned(),
+            "--".to_owned(),
+        ]);
     }
     args.extend_from_slice(command);
 
     let mut resources = hidden_file.into_iter().collect::<Vec<_>>();
     resources.extend(seccomp);
-    resources.extend(launcher);
+    resources.push(launcher);
     Ok(PreparedLaunch {
         program: BWRAP,
         args,
@@ -219,8 +229,8 @@ pub fn prepare(request: &ValidatedExec, command: &[String]) -> Result<PreparedLa
     })
 }
 
-fn base_args() -> Vec<String> {
-    [
+fn base_args(drop_capabilities: bool) -> Vec<String> {
+    let mut args = [
         "--new-session",
         "--die-with-parent",
         "--unshare-user",
@@ -238,7 +248,11 @@ fn base_args() -> Vec<String> {
     ]
     .into_iter()
     .map(str::to_owned)
-    .collect()
+    .collect::<Vec<_>>();
+    if drop_capabilities {
+        args.extend(["--cap-drop".to_owned(), "ALL".to_owned()]);
+    }
+    args
 }
 
 fn reject_missing_concrete_denies(
@@ -684,7 +698,7 @@ fn walk(
     depth: usize,
     follow_symlink_directories: bool,
     budget: &mut ScanBudget,
-    visited_directories: &mut BTreeSet<PathBuf>,
+    visited_directories: &mut BTreeSet<(u64, u64)>,
     callback: &mut impl FnMut(&Path, &fs::FileType) -> Result<Walk, String>,
 ) -> Result<(), String> {
     if depth > MAX_SCAN_DEPTH {
@@ -693,13 +707,13 @@ fn walk(
         ));
     }
     budget.check_deadline()?;
-    let canonical = directory.canonicalize().map_err(|error| {
+    let metadata = fs::metadata(directory).map_err(|error| {
         format!(
-            "cannot resolve policy root {}: {error}",
+            "cannot inspect policy root {}: {error}",
             directory.display()
         )
     })?;
-    if !visited_directories.insert(canonical) {
+    if !visited_directories.insert((metadata.dev(), metadata.ino())) {
         return Ok(());
     }
     budget.enter_directory()?;
@@ -910,6 +924,77 @@ fn seccomp_file() -> Result<File, String> {
     Ok(file)
 }
 
+#[allow(unsafe_code)]
+fn capability_sets() -> Result<[[u32; 3]; 2], String> {
+    let mut header = [LINUX_CAPABILITY_VERSION_3, 0];
+    let mut sets = [[0_u32; 3]; 2];
+    // SAFETY: capability ABI version 3 uses a [version, pid] header and two
+    // [effective, permitted, inheritable] capability-set entries.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_capget,
+            header.as_mut_ptr(),
+            sets.as_mut_ptr(),
+        )
+    };
+    if result < 0 {
+        return Err(format!(
+            "failed to verify Linux sandbox capabilities: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(sets)
+}
+
+fn capability_sets_are_empty(sets: [[u32; 3]; 2]) -> bool {
+    sets.into_iter()
+        .all(|[effective, permitted, _]| effective == 0 && permitted == 0)
+}
+
+fn ensure_no_capabilities() -> Result<(), String> {
+    if capability_sets_are_empty(capability_sets()?) {
+        Ok(())
+    } else {
+        Err("Linux sandbox retained effective or permitted capabilities".to_owned())
+    }
+}
+
+#[allow(unsafe_code)]
+fn drop_capabilities() -> Result<(), String> {
+    let mut header = [LINUX_CAPABILITY_VERSION_3, 0];
+    let mut empty_sets = [[0_u32; 3]; 2];
+    // SAFETY: capability ABI version 3 uses the same fixed arrays as capget.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_capset,
+            header.as_mut_ptr(),
+            empty_sets.as_mut_ptr(),
+        )
+    };
+    if result < 0 {
+        return Err(format!(
+            "failed to drop Linux sandbox capabilities: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    ensure_no_capabilities()
+}
+
+/// Verifies Bubblewrap's capability drop before running a blocked command.
+///
+/// # Errors
+///
+/// Returns an error for malformed arguments, retained capabilities, or an
+/// `exec` failure.
+pub fn run_sandbox_launcher(arguments: &[String]) -> Result<(), String> {
+    if arguments.first().map(String::as_str) != Some("--") || arguments.len() < 2 {
+        return Err("sandbox launcher arguments are invalid".to_owned());
+    }
+    ensure_no_capabilities()?;
+    let error = Command::new(&arguments[1]).args(&arguments[2..]).exec();
+    Err(format!("cannot start sandboxed command: {error}"))
+}
+
 /// Runs inside a fresh Bubblewrap network namespace. In proxy mode, the bridge
 /// itself may connect to the one host proxy socket. The user command receives a
 /// seccomp filter that blocks AF_UNIX, so it cannot reuse this launcher to reach
@@ -941,6 +1026,7 @@ pub fn run_proxy_launcher(arguments: &[String]) -> Result<i32, String> {
         return Err("network launcher needs a proxy or local binding".to_owned());
     }
     ensure_loopback_up()?;
+    drop_capabilities()?;
     if let Some(bridge_socket) = socket_path {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, PROXY_LOOPBACK_PORT))
             .map_err(|error| format!("cannot bind sandbox proxy loopback: {error}"))?;
@@ -1126,8 +1212,8 @@ pub fn self_test() -> Result<(), String> {
     }
     let seccomp = seccomp_file()?;
     let hidden_file = hidden_file_source()?;
-    let script = r#"found=; while read -r key value rest; do [ "$key" = "NoNewPrivs:" ] && found=$value; done < /proc/self/status; [ "$found" = 1 ] && [ "$$" -le 2 ] && [ ! -r /etc/passwd ]"#;
-    let mut args = base_args();
+    let script = r#"nnp=; permitted=; effective=; while read -r key value rest; do case "$key" in NoNewPrivs:) nnp=$value;; CapPrm:) permitted=$value;; CapEff:) effective=$value;; esac; done < /proc/self/status; [ "$nnp" = 1 ] && [ "$permitted" = 0000000000000000 ] && [ "$effective" = 0000000000000000 ] && [ "$$" -le 2 ] && [ ! -r /etc/passwd ]"#;
+    let mut args = base_args(true);
     args.extend([
         "--perms".to_owned(),
         "000".to_owned(),
@@ -1166,7 +1252,7 @@ mod tests {
 
     #[test]
     fn base_args_request_all_release_namespaces() {
-        let args = base_args();
+        let args = base_args(true);
         for required in [
             "--unshare-user",
             "--unshare-pid",
@@ -1178,6 +1264,30 @@ mod tests {
         ] {
             assert!(args.iter().any(|argument| argument == required));
         }
+    }
+
+    #[test]
+    fn blocked_commands_drop_all_capabilities_with_bubblewrap() {
+        let has_cap_drop = |args: &[String]| {
+            args.windows(2)
+                .any(|pair| pair[0] == "--cap-drop" && pair[1] == "ALL")
+        };
+        assert!(has_cap_drop(&base_args(true)));
+        assert!(!has_cap_drop(&base_args(false)));
+    }
+
+    #[test]
+    fn effective_or_permitted_capabilities_are_rejected() {
+        assert!(capability_sets_are_empty([[0, 0, u32::MAX], [0, 0, 0]]));
+        assert!(!capability_sets_are_empty([[1, 0, 0], [0, 0, 0]]));
+        assert!(!capability_sets_are_empty([[0, 1, 0], [0, 0, 0]]));
+        assert!(!capability_sets_are_empty([[0, 0, 0], [1, 0, 0]]));
+        assert!(!capability_sets_are_empty([[0, 0, 0], [0, 1, 0]]));
+    }
+
+    #[test]
+    fn sandbox_launcher_rejects_malformed_arguments_before_exec() {
+        assert!(run_sandbox_launcher(&[]).is_err());
     }
 
     #[test]
@@ -1245,7 +1355,9 @@ mod tests {
     #[test]
     fn expired_scan_budget_fails_closed() {
         let budget = ScanBudget {
-            deadline: Instant::now() - Duration::from_secs(1),
+            deadline: Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .expect("one second before now is representable"),
             inspected_entries: 0,
             visited_directories: 0,
             max_directories: 1,
@@ -1492,7 +1604,7 @@ mod tests {
     #[test]
     fn deny_mounts_follow_write_mounts() {
         let path = std::env::temp_dir();
-        let mut args = base_args();
+        let mut args = base_args(true);
         push_mount(&mut args, "--bind", &path, &path);
         append_deny(
             &mut args,

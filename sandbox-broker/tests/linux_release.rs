@@ -20,6 +20,7 @@ fn sandbox_probe_entrypoint() {
     let Ok(probe) = std::env::var("PI_SANDBOX_RELEASE_PROBE") else {
         return;
     };
+    assert_no_capabilities();
     match probe.as_str() {
         "network" => {
             let error = TcpStream::connect("127.0.0.1:9")
@@ -52,5 +53,23 @@ fn sandbox_probe_entrypoint() {
             }
         }
         other => panic!("unknown sandbox release probe: {other}"),
+    }
+}
+
+fn assert_no_capabilities() {
+    let status = std::fs::read_to_string("/proc/self/status").expect("process status");
+    for name in ["CapPrm:", "CapEff:"] {
+        let value = status
+            .lines()
+            .find_map(|line| {
+                let mut fields = line.split_whitespace();
+                if fields.next() == Some(name) {
+                    fields.next()
+                } else {
+                    None
+                }
+            })
+            .expect("capability status field");
+        assert_eq!(value, "0000000000000000", "retained {name}");
     }
 }

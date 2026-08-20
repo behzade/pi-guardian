@@ -49,12 +49,15 @@ A child can still win the non-atomic fork-and-enumeration race, then leave the p
 
 The Rust broker has a Linux Bubblewrap backend with a fixed binary path,
 read-only root, ordered exact write and deny mounts, user/PID/network/IPC/UTS
-namespaces, private `/proc`, `no_new_privs`, a reviewed blocked-network seccomp
-filter, and PID-namespace teardown. An approved local test-port right enables
-private loopback without a host bridge. Proxy mode adds one fixed bridge
-listener inside the network namespace. A host-only launcher connects that
-listener to the validated proxy socket, then starts the user command under a
-filter that denies `AF_UNIX`. Its automated, ignored host release gate still needs to pass on
+namespaces, private `/proc`, `no_new_privs`, empty effective and permitted
+capability sets before user code, a reviewed blocked-network seccomp filter, and
+PID-namespace teardown. An approved local test-port right enables private
+loopback without a host bridge. Proxy mode adds one fixed bridge listener inside
+the network namespace. The trusted launcher retains namespace-local
+`CAP_NET_ADMIN` only while enabling private loopback, then drops and verifies
+all effective and permitted capabilities before it connects the listener to the
+validated proxy socket and starts the user command under a filter that denies
+`AF_UNIX`. Its automated, ignored host release gate still needs to pass on
 x86_64 and aarch64 Linux; the new proxy bridge has not yet run on Linux. Missing
 Bubblewrap or unavailable unprivileged namespaces fail readiness rather than
 falling back.
@@ -111,7 +114,8 @@ Linux has an automated ignored host release gate for read-only root mounts,
 exact and fresh writable grants, hidden read denies, protected control mounts,
 symlink and missing-path cases, blocked IP and host Unix sockets, user/PID
 namespace behavior, the proxy bridge and direct Unix-socket denial,
-`no_new_privs`, seccomp, environment replacement, malformed framing, output
+`no_new_privs`, empty capability sets, seccomp, environment replacement,
+malformed framing, output
 bounds, cancellation, timeout, shutdown, and strict `setsid -f` and double-fork
 descendant cleanup. The new proxy case has not run. The gate must pass outside
 an existing sandbox on both x86_64 and aarch64 before declaring the Linux

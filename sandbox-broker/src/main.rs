@@ -21,12 +21,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "linux")]
     {
         let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-        if arguments
-            .first()
-            .is_some_and(|item| item == "__linux_proxy_launch")
-        {
-            let code = linux::run_proxy_launcher(&arguments[1..])?;
-            std::process::exit(code);
+        match arguments.first().map(String::as_str) {
+            Some("__linux_proxy_launch") => {
+                let code = linux::run_proxy_launcher(&arguments[1..])?;
+                std::process::exit(code);
+            }
+            Some("__linux_sandbox_launch") => {
+                linux::run_sandbox_launcher(&arguments[1..])?;
+                unreachable!("sandbox launcher exec replaces the process");
+            }
+            _ => {}
         }
     }
     let stdin = io::stdin();

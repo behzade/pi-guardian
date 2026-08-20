@@ -9,6 +9,7 @@ use pi_sandbox_broker::protocol::{ExecRequest, NetworkPolicy};
 use super::support::{Broker, TempRoot, request};
 
 const OUTPUT_LIMIT: u64 = 4 * 1024;
+const ZERO_CAPABILITY_CHECK: &str = r#"test "$(awk '($1 == "CapPrm:" || $1 == "CapEff:") && $2 == "0000000000000000" { zero += 1 } END { print zero + 0 }' /proc/self/status)" = 2"#;
 
 #[test]
 #[ignore = "release gate: requires an unsandboxed Linux host with fixed Bubblewrap"]
@@ -22,10 +23,13 @@ fn linux_runtime_release_gate() {
         "runtime-boundary",
         &workspace,
         concat!(
-            "found=; while read -r key value rest; do ",
-            "[ \"$key\" = NoNewPrivs: ] && found=$value; done < /proc/self/status; ",
-            "test \"$found\" = 1 && test \"$$\" -le 2 && test -r /etc/os-release && ",
-            "test \"$ONLY\" = yes && test -z \"${PI_RELEASE_HOST_SENTINEL:-}\" && printf runtime-ok"
+            "nnp=; permitted=; effective=; while read -r key value rest; do case \"$key\" in ",
+            "NoNewPrivs:) nnp=$value;; CapPrm:) permitted=$value;; CapEff:) effective=$value;; esac; ",
+            "done < /proc/self/status; test \"$nnp\" = 1 && ",
+            "test \"$permitted\" = 0000000000000000 && ",
+            "test \"$effective\" = 0000000000000000 && test \"$$\" -le 2 && ",
+            "test -r /etc/os-release && test \"$ONLY\" = yes && ",
+            "test -z \"${PI_RELEASE_HOST_SENTINEL:-}\" && printf runtime-ok"
         )
         .to_owned(),
         vec![],
@@ -72,7 +76,7 @@ fn linux_runtime_release_gate() {
     let mut loopback = request(
 		"loopback-allowed",
 		&workspace,
-		"python3 -c 'import socket; s=socket.socket(); s.bind((\"127.0.0.1\",0)); s.listen(); c=socket.create_connection(s.getsockname()); a,_=s.accept(); c.sendall(b\"ok\"); print(a.recv(2).decode(),end=\"\")'".to_owned(),
+		format!("{ZERO_CAPABILITY_CHECK} && python3 -c 'import socket; s=socket.socket(); s.bind((\"127.0.0.1\",0)); s.listen(); c=socket.create_connection(s.getsockname()); a,_=s.accept(); c.sendall(b\"ok\"); print(a.recv(2).decode(),end=\"\")'"),
 		vec![],
 		vec![],
 		Some(5_000),
@@ -115,7 +119,7 @@ fn linux_runtime_release_gate() {
     let mut proxied = request(
 		"network-proxy-bridge",
 		&workspace,
-		"python3 -c 'import socket; s=socket.create_connection((\"127.0.0.1\",31128)); s.sendall(b\"ping\"); print(s.recv(4).decode(), end=\"\")'".to_owned(),
+		format!("{ZERO_CAPABILITY_CHECK} && python3 -c 'import socket; s=socket.create_connection((\"127.0.0.1\",31128)); s.sendall(b\"ping\"); print(s.recv(4).decode(), end=\"\")'"),
 		vec![],
 		vec![],
 		Some(5_000),
