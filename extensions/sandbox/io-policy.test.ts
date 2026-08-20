@@ -13,19 +13,24 @@ import {
 } from "./io-policy.ts";
 import { canonicalize } from "./io-permissions.ts";
 
-test("base rights allow broad reads and only workspace or temp writes", () => {
+test("base rights allow workspace reads and workspace or temp writes", () => {
 	const root = mkdtempSync(join(tmpdir(), "pi-policy-"));
 	const workspace = join(root, "workspace");
 	mkdirSync(workspace);
 	const outside = canonicalize("/home/sandbox-user/pi-policy-outside/file.txt");
 
-	assert.equal(isBaseReadAllowed(outside, DEFAULT_CONFIG, workspace), true);
+	assert.equal(isBaseReadAllowed(join(workspace, "input.txt"), DEFAULT_CONFIG, workspace), true);
+	assert.equal(isBaseReadAllowed(outside, DEFAULT_CONFIG, workspace), false);
 	assert.equal(isBaseWriteAllowed(join(workspace, "out.txt"), DEFAULT_CONFIG, workspace), true);
 	assert.equal(isBaseWriteAllowed(join(tmpdir(), "out.txt"), DEFAULT_CONFIG, workspace), true);
 	assert.equal(isBaseWriteAllowed(outside, DEFAULT_CONFIG, workspace), false);
 	assert.equal(isBaseWriteAllowed(join(workspace, ".git", "index"), DEFAULT_CONFIG, workspace), false);
 	assert.equal(
 		isBaseWriteAllowed(join(workspace, ".pi", "extensions", "unsafe.ts"), DEFAULT_CONFIG, workspace),
+		false,
+	);
+	assert.equal(
+		isBaseWriteAllowed(join(workspace, ".guardian", "sandbox.json"), DEFAULT_CONFIG, workspace),
 		false,
 	);
 });
@@ -81,28 +86,37 @@ test("a symlinked workspace git folder stays read-only", () => {
 	);
 });
 
-test("secret file rules cover top-level and nested paths", () => {
+test("configured secret file rules cover top-level and nested paths", () => {
 	const root = mkdtempSync(join(tmpdir(), "pi-policy-"));
 	const workspace = join(root, "workspace");
 	mkdirSync(workspace);
+	const config = {
+		...DEFAULT_CONFIG,
+		filesystem: {
+			...DEFAULT_CONFIG.filesystem,
+			denyRead: ["**/.env", "**/.env.*", "**/*.key"],
+			denyWrite: ["**/.env", "**/.env.*", "**/*.pem", "**/*.key"],
+		},
+	};
 
 	for (const path of [
 		join(workspace, ".env"),
 		join(workspace, "app", ".env.local"),
 		join(workspace, "keys", "deploy.key"),
 	]) {
-		assert.equal(isDeniedByConfig(canonicalize(path), "read", DEFAULT_CONFIG, workspace), true);
-		assert.equal(isDeniedByConfig(canonicalize(path), "write", DEFAULT_CONFIG, workspace), true);
+		assert.equal(isDeniedByConfig(canonicalize(path), "read", config, workspace), true);
+		assert.equal(isDeniedByConfig(canonicalize(path), "write", config, workspace), true);
 	}
 });
 
 test("relative secret globs do not hide public keys outside the workspace", () => {
 	const workspace = canonicalize("/tmp/project");
 	const publicRootKey = canonicalize("/nix/store/nixpkgs-source/root.key");
+	const config = { filesystem: { denyRead: ["**/*.key"] } };
 
-	assert.equal(isDeniedByConfig(publicRootKey, "read", DEFAULT_CONFIG, workspace), false);
+	assert.equal(isDeniedByConfig(publicRootKey, "read", config, workspace), false);
 	assert.equal(
-		isDeniedByConfig(join(workspace, "root.key"), "read", DEFAULT_CONFIG, workspace),
+		isDeniedByConfig(join(workspace, "root.key"), "read", config, workspace),
 		true,
 	);
 });
@@ -110,11 +124,12 @@ test("relative secret globs do not hide public keys outside the workspace", () =
 test("relative PEM rules stay scoped to the workspace", () => {
 	const workspace = canonicalize("/tmp/project");
 	const systemBundle = canonicalize("/etc/ssl/cert.pem");
+	const config = { filesystem: { denyWrite: ["**/*.pem"] } };
 
-	assert.equal(isDeniedByConfig(systemBundle, "read", DEFAULT_CONFIG, workspace), false);
-	assert.equal(isDeniedByConfig(systemBundle, "write", DEFAULT_CONFIG, workspace), false);
+	assert.equal(isDeniedByConfig(systemBundle, "read", config, workspace), false);
+	assert.equal(isDeniedByConfig(systemBundle, "write", config, workspace), false);
 	assert.equal(
-		isDeniedByConfig(join(workspace, "cert.pem"), "write", DEFAULT_CONFIG, workspace),
+		isDeniedByConfig(join(workspace, "cert.pem"), "write", config, workspace),
 		true,
 	);
 });

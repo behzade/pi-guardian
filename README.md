@@ -1,33 +1,60 @@
-# Pi Guardian
+# Guardian
 
-Pi Guardian is one Pi extension that owns the complete command-security boundary:
+Guardian is a Pi policy adapter backed by [nono](https://github.com/nolabs-ai/nono).
+It keeps explicit project approvals and exact filesystem/network rights while
+nono applies the OS sandbox:
 
-- native Seatbelt (macOS) and Bubblewrap (Linux) command sandboxing;
-- checked-in project filesystem, network, and development-cache policy;
-- `request_access` approval UI and in-process parent-session routing;
-- sandboxed background jobs and exact-host network proxying;
-- bounded denial diagnostics with no automatic command retry.
+- Linux: Landlock and nono's supervised network proxy;
+- macOS: Seatbelt and nono's supervised network proxy.
 
-The TypeScript extension lives in [`extensions/sandbox`](extensions/sandbox). The Rust broker and its protocol and threat model live in [`sandbox-broker`](sandbox-broker).
-
-## Checks
-
-The development shell must provide Node.js, Cargo, and the existing dependency caches. Do not create alternate dependency or target directories.
-
-```bash
-npm run check --prefix extensions/sandbox
-cargo test --manifest-path sandbox-broker/Cargo.toml
-git diff --check
-```
-
-The platform release tests require their native sandbox backend; see [`sandbox-broker/README.md`](sandbox-broker/README.md).
-
-## Packaging
-
-`packages.<system>.guardian` is the complete Pi extension, with its broker path substituted at build time. `packages.<system>.sandbox-broker` exposes the broker separately.
-
-A consuming Pi configuration should install `guardian` as one extension. Approval transport is internal and must not be loaded as a separate package: parent and child sessions share its in-process registry through the single extension module.
+The previous custom Bubblewrap/Seatbelt broker is no longer packaged or used.
 
 ## Policy
 
-Global machine policy is read from `~/.pi/agent/extensions/sandbox.json`. Trusted projects can check portable policy into `.pi/extensions/sandbox/sandbox.json`. The extension fails closed when an interactive parent is unavailable for approval.
+Machine policy is read from `~/.config/guardian/sandbox.json`. The Pi adapter
+uses the legacy `~/.pi/agent/extensions/sandbox.json` only when the neutral path
+is absent. Portable, user-approved project rights are stored in:
+
+```text
+.guardian/sandbox.json
+```
+
+The adapter reads the legacy `.pi/extensions/sandbox/sandbox.json` only when the
+new policy is absent; the next approved update writes `.guardian/sandbox.json`.
+
+Project rights retain the version 1 schema:
+
+- exact file or tree `read`/`write` rights;
+- exact `network_host` rights;
+- `network_local`;
+- managed development-cache environment mappings.
+
+Commands receive one immutable policy snapshot. Policy changes never retry a
+command automatically.
+
+## Enforcement
+
+Each foreground command and background job receives an ephemeral, strictly
+generated nono profile extending nono's built-in `default` profile. Guardian
+maps:
+
+- read trees/files to nono read capabilities;
+- write trees/files to nono read-write capabilities;
+- exact hosts to nono proxy allow entries;
+- Linux `network_local` to the localhost port range;
+- macOS `network_local` to nono's port-zero support plus reviewed localhost
+  Seatbelt rules.
+
+The packaged extension uses the fixed nono executable supplied by Nix; it does
+not search `PATH`.
+
+## Checks
+
+```bash
+npm run check --prefix extensions/sandbox
+git diff --check
+```
+
+nono is currently alpha upstream. The flake's nixpkgs revision fixes the nono
+version used by Guardian; update it only after reviewing upstream security and
+release notes.

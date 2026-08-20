@@ -35,8 +35,8 @@ export function buildBrokerExecRequest(
 	allowLocalBinding = false,
 ): BrokerExecRequest {
 	const effective = mergeGlobalConfig(DEFAULT_CONFIG, config);
-	if ((networkHosts.length > 0) !== (proxy !== undefined)) {
-		throw new Error("Native network hosts and proxy state must be provided together");
+	if (proxy !== undefined && networkHosts.length === 0) {
+		throw new Error("Network proxy state requires at least one allowed host");
 	}
 	if (effective.network?.allowAllUnixSockets) {
 		throw new Error("The native sandbox does not support allowing all Unix sockets");
@@ -67,12 +67,13 @@ export function buildBrokerExecRequest(
 			base_rights: baseRights(effective, actualCwd),
 			grants: permissions.map(permissionRight),
 			denies: denyRules(effective, actualCwd),
-			network: proxy
+			network: networkHosts.length > 0
 				? {
 						mode: "proxy",
-						tcp_port: proxy.port,
-						unix_socket: proxy.socketPath,
+						tcp_port: proxy?.port ?? 1,
+						unix_socket: proxy?.socketPath ?? "/unused-by-nono",
 						allow_local_binding: allowLocalBinding,
+						allowed_hosts: [...networkHosts],
 					}
 				: allowLocalBinding
 					? { mode: "loopback" }

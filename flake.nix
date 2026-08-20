@@ -18,16 +18,14 @@
         system:
         let
           pkgs = import nixpkgs { inherit system; };
-          broker = pkgs.callPackage ./nix/pi-sandbox-broker.nix { };
           mcpCli = pkgs.callPackage ./nix/pi-mcp-cli.nix { };
           guardian = pkgs.callPackage ./nix/pi-sandbox-extension.nix {
             inherit mcpCli;
-            sandboxBroker = broker;
+            nono = pkgs.nono;
           };
         in
         {
           inherit guardian;
-          sandbox-broker = broker;
           default = guardian;
         }
       );

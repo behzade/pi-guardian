@@ -75,6 +75,7 @@ export interface BrokerExecRequest {
 					tcp_port: number;
 					unix_socket: string;
 					allow_local_binding: boolean;
+					allowed_hosts?: string[];
 			  };
 		unix_socket_roots: string[];
 		output_limit_bytes: number;

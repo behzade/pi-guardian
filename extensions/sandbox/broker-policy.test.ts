@@ -29,7 +29,7 @@ test("maps current base rights and command-local folder grants", () => {
 	assert.equal(request.timeout_ms, 30_000);
 	assert.ok(
 		request.policy.base_rights.some(
-			(right) => right.access === "read" && right.path === "/" && right.scope === "tree",
+			(right) => right.access === "read" && right.path === canonicalCwd && right.scope === "tree",
 		),
 	);
 	assert.ok(
@@ -187,7 +187,7 @@ test("native deny globs reject dot segments before reaching Rust", () => {
 	}
 });
 
-test("native preview maps approved hosts to one command-scoped proxy", () => {
+test("nono policy maps approved hosts and local network", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-broker-policy-"));
 	const proxied = buildBrokerExecRequest(
 		"one",
@@ -204,6 +204,7 @@ test("native preview maps approved hosts to one command-scoped proxy", () => {
 		tcp_port: 43127,
 		unix_socket: "/tmp/pi-proxy.sock",
 		allow_local_binding: false,
+		allowed_hosts: ["example.com"],
 	});
 	const local = buildBrokerExecRequest(
 		"local",
@@ -233,6 +234,7 @@ test("native preview maps approved hosts to one command-scoped proxy", () => {
 		tcp_port: 43127,
 		unix_socket: "/tmp/pi-proxy.sock",
 		allow_local_binding: true,
+		allowed_hosts: ["example.com"],
 	});
 	const request = buildBrokerExecRequest(
 		"one",
@@ -250,7 +252,7 @@ test("native preview maps approved hosts to one command-scoped proxy", () => {
 	assert.deepEqual(request.policy.unix_socket_roots, [canonicalize("/tmp/service.sock")]);
 });
 
-test("native preview rejects broad and relative Unix socket access", () => {
+test("nono policy rejects broad and relative Unix socket access", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-broker-policy-"));
 	assert.throws(
 		() =>

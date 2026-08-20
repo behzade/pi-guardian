@@ -1,14 +1,9 @@
 import { Cause, Deferred, Effect, Exit, Fiber, Schema, Scope } from "effect";
-import {
-	SandboxBrokerClient,
-	type BrokerExecRequest,
-	type BrokerExecResult,
-} from "./broker-client.ts";
+import type { BrokerExecResult } from "./broker-client.ts";
+import { NonoClient } from "./nono-client.ts";
 import { buildBrokerExecRequest, type NativeFilePermission } from "./broker-policy.ts";
-import { developmentCacheWriteRightsForWorkspace } from "./development-caches.ts";
 import { formatDenialSummary } from "./denial-summary.ts";
 import type { NativeSandboxConfig } from "./sandbox-config.ts";
-import { acquireNativeNetworkProxy, type NativeNetworkProxy } from "./native-network-proxy.ts";
 
 const MAX_RETAINED_BYTES = 2 * 1024 * 1024;
 const MAX_JOBS = 32;
@@ -25,15 +20,13 @@ const jobError = (cause: unknown) => new NativeBackgroundJobError({
 
 interface NativeJob {
 	name: string;
-	client: SandboxBrokerClient;
-	proxy?: NativeNetworkProxy;
+	client: NonoClient;
 	output: Buffer;
 	startedAt: Date;
 	pid?: number;
 	result?: BrokerExecResult;
 	error?: string;
 	fiber: Fiber.Fiber<void, never>;
-	scope: Scope.Closeable;
 }
 
 interface StartOptions {
@@ -48,12 +41,12 @@ interface StartOptions {
 }
 
 export class NativeBackgroundJobs {
-	readonly #brokerPath: string;
+	readonly #nonoPath: string;
 	readonly #jobs = new Map<string, NativeJob>();
 	readonly #scope = Scope.makeUnsafe();
 	#closed = false;
 
-	constructor(brokerPath: string) { this.#brokerPath = brokerPath; }
+	constructor(nonoPath: string) { this.#nonoPath = nonoPath; }
 
 	readonly startEffect = Effect.fn("NativeBackgroundJobs.start")(function* (this: NativeBackgroundJobs, options: StartOptions) {
 		if (this.#closed) return yield* Effect.fail(jobError("background jobs are shut down"));
@@ -61,46 +54,31 @@ export class NativeBackgroundJobs {
 		if (this.#jobs.size >= MAX_JOBS) return yield* Effect.fail(jobError(`background job limit reached: ${MAX_JOBS}`));
 
 		const manager = this;
-		const jobScope = yield* Scope.make();
-		const acquire = Effect.gen(function* () {
-			const cacheRoot = developmentCacheWriteRightsForWorkspace(
+		const client = yield* Effect.tryPromise({
+			try: () => NonoClient.start(manager.#nonoPath),
+			catch: jobError,
+		});
+		const request = yield* Effect.try({
+			try: () => buildBrokerExecRequest(
+				`background/${options.name}`,
+				options.command,
 				options.cwd,
-				options.config.developmentCache,
-			)[0]?.path;
-			const client = yield* SandboxBrokerClient.acquire(
-				manager.#brokerPath,
-				process.platform,
-				cacheRoot,
-			).pipe(Scope.provide(jobScope));
-			const proxy = options.networkHosts.length > 0
-				? yield* acquireNativeNetworkProxy(options.networkHosts).pipe(Scope.provide(jobScope))
-				: undefined;
-			const request = yield* Effect.try({
-				try: () => buildBrokerExecRequest(
-					`background/${options.name}`,
-					options.command,
-					options.cwd,
-					undefined,
-					options.config,
-					options.revalidatePermissions?.() ?? options.permissions,
-					options.networkHosts,
-					proxy ? { port: proxy.port, socketPath: proxy.socketPath } : undefined,
-					options.allowLocalBinding ?? false,
-				),
-				catch: jobError,
-			});
-			request.interactive = true;
-			return { client, proxy, request };
-		}).pipe(Effect.onExit((exit) => Exit.isFailure(exit) ? Scope.close(jobScope, exit) : Effect.void));
-		const { client, proxy, request } = yield* acquire;
+				undefined,
+				options.config,
+				options.revalidatePermissions?.() ?? options.permissions,
+				options.networkHosts,
+				undefined,
+				options.allowLocalBinding ?? false,
+			),
+			catch: jobError,
+		});
+		request.interactive = true;
 		const started = yield* Deferred.make<void, NativeBackgroundJobError>();
 		const job = {
 			name: options.name,
 			client,
-			proxy,
 			output: Buffer.alloc(0),
 			startedAt: new Date(),
-			scope: jobScope,
 		} as NativeJob;
 
 		const run = Effect.gen(function* () {
@@ -124,9 +102,9 @@ export class NativeBackgroundJobs {
 				Deferred.doneUnsafe(started, Effect.fail(jobError(cause)));
 			}
 		}).pipe(
-			Effect.onExit((exit) => Effect.sync(() => {
+			Effect.onExit(() => Effect.sync(() => {
 				if (!Deferred.isDoneUnsafe(started)) Deferred.doneUnsafe(started, Effect.fail(jobError("background job ended before starting")));
-			}).pipe(Effect.andThen(Scope.close(jobScope, exit)))),
+			}).pipe(Effect.andThen(Effect.promise(() => client.shutdown())))),
 			Effect.catchCause(() => Effect.void),
 		);
 		job.fiber = yield* Effect.forkIn(run, this.#scope);

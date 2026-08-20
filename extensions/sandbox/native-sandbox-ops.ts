@@ -10,7 +10,6 @@ import {
 	type NativeFilePermission,
 } from "./broker-policy.ts";
 import { formatDenialSummary } from "./denial-summary.ts";
-import { acquireNativeNetworkProxy, type NativeNetworkProxy } from "./native-network-proxy.ts";
 
 export interface NativeBroker {
 	exec(
@@ -37,11 +36,6 @@ const sandboxError = (cause: unknown) => new NativeSandboxExecError({
 	cause,
 });
 
-const acquireNetworkProxy = (networkHosts: readonly string[]) =>
-	networkHosts.length === 0
-		? Effect.succeed(undefined)
-		: acquireNativeNetworkProxy(networkHosts).pipe(Effect.mapError(sandboxError));
-
 export const executeNativeSandboxCommand = Effect.fn("Sandbox.executeNativeCommand")(
 	function* (params: {
 		client: NativeBroker;
@@ -57,7 +51,6 @@ export const executeNativeSandboxCommand = Effect.fn("Sandbox.executeNativeComma
 		signal?: AbortSignal;
 		timeout?: number;
 	}) {
-		const proxy: NativeNetworkProxy | undefined = yield* acquireNetworkProxy(params.networkHosts);
 		const request = yield* Effect.try({
 			try: () => buildBrokerExecRequest(
 				params.commandId,
@@ -67,7 +60,7 @@ export const executeNativeSandboxCommand = Effect.fn("Sandbox.executeNativeComma
 				params.config,
 				params.revalidatePermissions?.() ?? params.permissions,
 				params.networkHosts,
-				proxy ? { port: proxy.port, socketPath: proxy.socketPath } : undefined,
+				undefined,
 				params.allowLocalBinding,
 			),
 			catch: sandboxError,

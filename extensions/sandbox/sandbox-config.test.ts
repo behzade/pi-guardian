@@ -7,10 +7,10 @@ import {
 	normalizeConfig,
 } from "./sandbox-config.ts";
 
-test("native preview is the only and default backend", () => {
-	assert.equal(DEFAULT_CONFIG.backend, "native-preview");
-	assert.equal(normalizeConfig({ backend: "native-preview" }).backend, "native-preview");
-	assert.throws(() => normalizeConfig({ backend: "codex" }), /backend must be native-preview/);
+test("nono is the only and default backend", () => {
+	assert.equal(DEFAULT_CONFIG.backend, "nono");
+	assert.equal(normalizeConfig({ backend: "nono" }).backend, "nono");
+	assert.throws(() => normalizeConfig({ backend: "codex" }), /backend must be nono/);
 	assert.throws(() => normalizeConfig({ codexCommand: "codex" }), /unknown fields/);
 	assert.throws(() => normalizeConfig({ permissionProfile: "pi" }), /unknown fields/);
 	assert.throws(() => normalizeConfig({ allowPty: true }), /unknown fields/);
@@ -90,7 +90,7 @@ test("shell environment preserves the active development shell and removes secre
 test("rejects malformed config instead of weakening policy", () => {
 	assert.throws(() => normalizeConfig(null), /JSON object/);
 	assert.throws(() => normalizeConfig({ enabled: "yes" }), /enabled/);
-	assert.throws(() => normalizeConfig({ brokerPath: "relative" }), /absolute/);
+	assert.throws(() => normalizeConfig({ nonoPath: "relative" }), /absolute/);
 	assert.throws(() => normalizeConfig({ network: { enabled: "yes" } }), /network.enabled/);
 	assert.throws(() => normalizeConfig({ network: { allowAllUnixSockets: "yes" } }), /boolean/);
 	assert.throws(() => normalizeConfig({ shellEnvironment: { inherit: "some" } }), /inherit/);

@@ -1,7 +1,17 @@
 # Agent Instructions
 
-Keep the guardian extension and native broker as one security boundary. Preserve fail-closed behavior, explicit approval, exact policy validation, and no automatic retry.
+Keep the Guardian policy adapter and its fixed nono executable as one security
+boundary. Preserve fail-closed behavior, explicit approval, exact policy
+validation, immutable command snapshots, and no automatic retry.
 
-The project shell is already active. Do not run Nix commands unless the user asks for that exact check. Use Cargo directly and preserve the supplied shared `CARGO_TARGET_DIR`. Never create alternate dependency folders, Nix caches, or Rust target directories.
+The project shell is already active. Do not run Nix commands unless the user
+asks for that exact check. Never create alternate dependency folders, Nix
+caches, Rust target directories, or Node module folders.
 
-Run the narrowest relevant check first. For extension changes use `npm run check --prefix extensions/sandbox`. For broker changes use `cargo test --manifest-path sandbox-broker/Cargo.toml`. Always run `git diff --check`.
+Run the narrowest relevant check first. For adapter changes use
+`npm run check --prefix extensions/sandbox`. Always run `git diff --check`.
+
+nono is security-critical and currently alpha upstream. Keep it pinned through
+the flake's nixpkgs revision. Review upstream security and release notes before
+updating. Production code must use the fixed packaged executable and must never
+resolve nono through `PATH`.

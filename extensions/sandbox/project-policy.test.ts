@@ -27,9 +27,9 @@ function workspace(): string {
 const basePolicy = (): ProjectSandboxPolicy => ({ version: 1, rights: [] });
 const machine = mergeGlobalConfig(DEFAULT_CONFIG, {});
 
-test("loads and saves one portable versioned project policy under Pi's extension trust root", () => {
+test("loads and saves one portable versioned project policy under Guardian's control root", () => {
 	const cwd = workspace();
-	assert.equal(projectPolicyPath(cwd), join(cwd, ".pi", "extensions", "sandbox", "sandbox.json"));
+	assert.equal(projectPolicyPath(cwd), join(cwd, ".guardian", "sandbox.json"));
 	const policy: ProjectSandboxPolicy = {
 		version: 1,
 		rights: [
@@ -71,7 +71,7 @@ test("activates network_local, exact hosts, file rights, and tree rights", () =>
 	}, cwd, machine), /read rights must target an existing path/);
 });
 
-test("project .git writes are broker grants while project .pi writes are rejected", () => {
+test("project .git writes are grants while Guardian and Pi control writes are rejected", () => {
 	const cwd = workspace();
 	mkdirSync(join(cwd, ".git"));
 	const active = activateProjectPolicy({
@@ -89,6 +89,10 @@ test("project .git writes are broker grants while project .pi writes are rejecte
 		version: 1,
 		rights: [{ kind: "filesystem", access: "write", path: ".pi", scope: "tree" }],
 	}, cwd, machine), /cannot grant sandboxed writes to project \.pi/);
+	assert.throws(() => activateProjectPolicy({
+		version: 1,
+		rights: [{ kind: "filesystem", access: "write", path: ".guardian", scope: "tree" }],
+	}, cwd, machine), /cannot grant sandboxed writes to project \.guardian/);
 
 	const linked = workspace();
 	const target = workspace();
@@ -145,6 +149,12 @@ test("safe project cache environment additions stay under the shared managed roo
 });
 
 test("symlinked project policy directories cannot supply or receive policy", () => {
+	const guardianLink = workspace();
+	const guardianTarget = workspace();
+	symlinkSync(guardianTarget, join(guardianLink, ".guardian"));
+	assert.throws(() => loadProjectPolicy(guardianLink, machine), /symlinked project control folder/);
+	assert.throws(() => saveProjectPolicy(guardianLink, basePolicy()), /symlinked project control folder/);
+
 	const projectRootLink = workspace();
 	const target = workspace();
 	symlinkSync(target, join(projectRootLink, ".pi"));

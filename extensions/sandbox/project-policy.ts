@@ -366,8 +366,10 @@ function activateFilesystemRight(
 		}
 	}
 	if (right.access === "write") {
-		const piRoot = projectControlRoot(lexical, cwd);
-		if (piRoot) throw new Error("Project policy cannot grant sandboxed writes to project .pi");
+		const projectRoot = projectControlRoot(lexical, cwd);
+		if (projectRoot) {
+			throw new Error(`Project policy cannot grant sandboxed writes to project ${projectRoot.endsWith(".guardian") ? ".guardian" : ".pi"}`);
+		}
 		const controlRoot = gitControlRoot(lexical, cwd);
 		if (controlRoot && isControlRootSymlink(controlRoot)) {
 			throw new Error(`Project policy cannot grant a symlinked control root: ${controlRoot}`);

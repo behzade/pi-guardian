@@ -2,6 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { Effect } from "effect";
 import type {
@@ -14,14 +15,13 @@ import {
 	createBashTool,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent";
-import { SandboxBrokerClient } from "./broker-client.ts";
+import { NonoClient } from "./nono-client.ts";
 import {
 	isValidBackgroundJobName,
 	modelVisibleBackgroundJobOutput,
 } from "./background-jobs.ts";
 import {
 	developmentCacheRoot,
-	developmentCacheWriteRightsForWorkspace,
 	ensureDevelopmentCacheDirectories,
 } from "./development-caches.ts";
 import {
@@ -77,12 +77,14 @@ import {
 	type ProjectAccessRight,
 } from "./project-policy.ts";
 
-const PACKAGED_BROKER_PATH = "@PI_SANDBOX_BROKER@/bin/pi-sandbox-broker";
+const PACKAGED_NONO_PATH = "@NONO@/bin/nono";
 
 function readGlobalConfig(): NativeSandboxConfig {
-	const path = resolve(getAgentDir(), "extensions", "sandbox.json");
-	if (!existsSync(path)) return mergeGlobalConfig(DEFAULT_CONFIG, {});
-	const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+	const path = resolve(homedir(), ".config", "guardian", "sandbox.json");
+	const legacy = resolve(getAgentDir(), "extensions", "sandbox.json");
+	const source = existsSync(path) ? path : legacy;
+	if (!existsSync(source)) return mergeGlobalConfig(DEFAULT_CONFIG, {});
+	const parsed: unknown = JSON.parse(readFileSync(source, "utf8"));
 	return mergeGlobalConfig(DEFAULT_CONFIG, normalizeConfig(parsed));
 }
 
@@ -108,7 +110,7 @@ export default function (pi: ExtensionAPI) {
 	let sandboxState: SandboxState = { kind: "initializing" };
 	let activeProject: ActiveProjectPolicy | undefined;
 	let activeProjectCwd = localCwd;
-	let brokerClient: SandboxBrokerClient | undefined;
+	let brokerClient: NonoClient | undefined;
 	let backgroundJobs: NativeBackgroundJobs | undefined;
 	let userBashCounter = 0;
 	let sessionGeneration = 0;
@@ -132,7 +134,7 @@ export default function (pi: ExtensionAPI) {
 		name: "request_access",
 		label: "Request project access",
 		description:
-			"Ask the user to add a batch of portable filesystem, network, and/or managed development-cache adapter entries to checked-in .pi/extensions/sandbox/sandbox.json. This host tool updates policy only; it never runs or retries a command.",
+			"Ask the user to add a batch of portable filesystem, network, and/or managed development-cache adapter entries to checked-in .guardian/sandbox.json. This host tool updates policy only; it never runs or retries a command.",
 		promptSnippet:
 			"After a sandbox denial, use request_access for the smallest useful project/home file tree, exact host, local network, or development_cache environment mapping. If approved, explicitly rerun later.",
 		parameters: RequestAccessParams,
@@ -259,7 +261,7 @@ export default function (pi: ExtensionAPI) {
 		name: "background_job",
 		label: "Background job",
 		description:
-			"Start, list, inspect, interact with, or stop a session-scoped long-running command. New jobs use the active .pi/extensions/sandbox/sandbox.json policy captured at start; existing jobs keep their start policy.",
+			"Start, list, inspect, interact with, or stop a session-scoped long-running command. New jobs use the active .guardian/sandbox.json policy captured at start; existing jobs keep their start policy.",
 		promptSnippet:
 			"Use background_job for long-running servers, watchers, builds, and tests. Use request_access separately if policy must change, then start a new job.",
 		parameters: BackgroundJobParams,
@@ -352,8 +354,8 @@ export default function (pi: ExtensionAPI) {
 			return { block: true, reason: `Protected or machine-denied ${access} path cannot be granted: ${path}` };
 		}
 		const gitRoot = access === "write" ? gitControlRoot(lexicalPath, ctx.cwd) : undefined;
-		const piRoot = access === "write" ? projectControlRoot(lexicalPath, ctx.cwd) : undefined;
-		if (piRoot) return { block: true, reason: "Sandboxed tools cannot write project .pi; trusted host tools own that control folder." };
+		const projectRoot = access === "write" ? projectControlRoot(lexicalPath, ctx.cwd) : undefined;
+		if (projectRoot) return { block: true, reason: `Sandboxed tools cannot write project ${basename(projectRoot)}; trusted host tools own that control folder.` };
 		if (gitRoot && isControlRootSymlink(gitRoot)) {
 			return { block: true, reason: `Writes to a symlinked control folder cannot be granted: ${gitRoot}` };
 		}
@@ -422,17 +424,13 @@ export default function (pi: ExtensionAPI) {
 			sandboxState = { kind: "initializing" };
 			ensureDevelopmentCacheDirectories(activeProject.config.developmentCache);
 			if (process.platform !== "darwin" && process.platform !== "linux") throw new Error("the native sandbox supports macOS and Linux only");
-			const brokerPath = machineConfig.brokerPath ?? PACKAGED_BROKER_PATH;
-			const cacheRoot = developmentCacheWriteRightsForWorkspace(
-				ctx.cwd,
-				activeProject.config.developmentCache,
-			)[0]?.path;
-			const client = await SandboxBrokerClient.start(brokerPath, process.platform, cacheRoot);
+			const nonoPath = machineConfig.nonoPath ?? PACKAGED_NONO_PATH;
+			const client = await NonoClient.start(nonoPath);
 			if (generation !== sessionGeneration) { await client.shutdown(); return; }
 			brokerClient = client;
-			backgroundJobs = new NativeBackgroundJobs(brokerPath);
+			backgroundJobs = new NativeBackgroundJobs(nonoPath);
 			sandboxState = { kind: "ready", config: activeProject.config, machineConfig };
-			const backendLabel = `native ${process.platform === "linux" ? "Bubblewrap" : "Seatbelt"}`;
+			const backendLabel = `nono ${process.platform === "linux" ? "Landlock" : "Seatbelt"}`;
 			ctx.ui.setStatus("sandbox", ctx.ui.theme.fg("accent", `🔒 ${backendLabel}`));
 		} catch (error) {
 			if (generation !== sessionGeneration) return;
@@ -466,7 +464,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			ctx.ui.notify([
-				"OS sandbox (native-preview):",
+				"OS sandbox (nono):",
 				`  Project policy: ${projectPolicyPath(ctx.cwd)}`,
 				`  Project rights: ${activeProject?.policy.rights.map(rightLabel).join(", ") || "(none)"}`,
 				`  Network hosts: ${networkHosts().join(", ") || "(blocked)"}`,

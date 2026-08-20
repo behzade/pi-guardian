@@ -37,8 +37,8 @@ export interface NativeSandboxShellEnvironmentConfig {
 
 export interface NativeSandboxConfig {
 	enabled?: boolean;
-	backend?: "native-preview";
-	brokerPath?: string;
+	backend?: "nono";
+	nonoPath?: string;
 	developmentCache?: DevelopmentCacheConfig;
 	network?: NativeSandboxNetworkConfig;
 	filesystem?: NativeSandboxFilesystemConfig;
@@ -50,7 +50,7 @@ export const DEFAULT_CONFIG: Required<
 > &
 	NativeSandboxConfig = {
 	enabled: true,
-	backend: "native-preview",
+	backend: "nono",
 	developmentCache: DEFAULT_DEVELOPMENT_CACHE_CONFIG,
 	network: {
 		enabled: true,
@@ -60,7 +60,7 @@ export const DEFAULT_CONFIG: Required<
 		allowAllUnixSockets: false,
 	},
 	filesystem: {
-		allowRead: [":root"],
+		allowRead: ["."],
 		denyRead: [
 			"~/.ssh",
 			"~/.aws",
@@ -73,10 +73,13 @@ export const DEFAULT_CONFIG: Required<
 		],
 		allowWrite: [".", ":tmpdir", ":slash_tmp"],
 		denyWrite: [
+			".guardian",
+			".pi",
 			"**/.env",
 			"**/.env.*",
 			"**/*.pem",
 			"**/*.key",
+			"~/.guardian",
 			"~/.pi",
 			"~/.codex",
 		],
@@ -242,7 +245,7 @@ export function normalizeConfig(value: unknown): NativeSandboxConfig {
 		[
 			"enabled",
 			"backend",
-			"brokerPath",
+			"nonoPath",
 			"developmentCache",
 			"network",
 			"filesystem",
@@ -252,18 +255,18 @@ export function normalizeConfig(value: unknown): NativeSandboxConfig {
 	);
 	const enabled = input.enabled;
 	const backend = input.backend;
-	const brokerPath = input.brokerPath;
+	const nonoPath = input.nonoPath;
 	if (enabled !== undefined && typeof enabled !== "boolean") {
 		throw new Error("enabled must be a boolean");
 	}
-	if (backend !== undefined && backend !== "native-preview") {
-		throw new Error("backend must be native-preview");
+	if (backend !== undefined && backend !== "nono") {
+		throw new Error("backend must be nono");
 	}
 	if (
-		brokerPath !== undefined &&
-		(typeof brokerPath !== "string" || !brokerPath.startsWith("/"))
+		nonoPath !== undefined &&
+		(typeof nonoPath !== "string" || !nonoPath.startsWith("/"))
 	) {
-		throw new Error("brokerPath must be an absolute path");
+		throw new Error("nonoPath must be an absolute path");
 	}
 
 	const networkInput =
@@ -345,8 +348,8 @@ export function normalizeConfig(value: unknown): NativeSandboxConfig {
 
 	return {
 		enabled: enabled as boolean | undefined,
-		backend: backend as "native-preview" | undefined,
-		brokerPath: brokerPath as string | undefined,
+		backend: backend as "nono" | undefined,
+		nonoPath: nonoPath as string | undefined,
 		developmentCache: normalizeDevelopmentCacheConfig(input.developmentCache),
 		network: networkInput
 			? {

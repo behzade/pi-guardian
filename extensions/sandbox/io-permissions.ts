@@ -20,7 +20,7 @@ export interface IoPermission {
 }
 const protectedHomeRoots = [".ssh", ".aws", ".gnupg"];
 const protectedSystemRoots = ["/dev"];
-const protectedWriteRoots = [".pi", ".codex"];
+const protectedWriteRoots = [".guardian", ".pi", ".codex"];
 const protectedAuthFiles = [
 	".pi/agent/auth.json",
 	".pi/agent/extensions/sandbox.json",
@@ -128,16 +128,19 @@ export function gitControlRoot(path: string, cwd?: string): string | undefined {
 }
 
 export function projectControlRoot(path: string, cwd: string): string | undefined {
-	const root = resolve(cwd, ".pi");
-	const canonicalRoot = canonicalize(root);
-	const returnedRoot = basename(canonicalRoot) === ".pi" ? canonicalRoot : root;
 	const lexical = resolve(path);
-	if (isInside(root, lexical)) return returnedRoot;
-	return isInside(canonicalRoot, canonicalize(path)) ? returnedRoot : undefined;
+	const actual = canonicalize(path);
+	for (const name of [".guardian", ".pi"] as const) {
+		const root = resolve(cwd, name);
+		const canonicalRoot = canonicalize(root);
+		const returnedRoot = basename(canonicalRoot) === name ? canonicalRoot : root;
+		if (isInside(root, lexical) || isInside(canonicalRoot, actual)) return returnedRoot;
+	}
+	return undefined;
 }
 
 export function isControlRootSymlink(path: string): boolean {
-	if (basename(path) !== ".git" && basename(path) !== ".pi") return false;
+	if (![".git", ".guardian", ".pi"].includes(basename(path))) return false;
 	try {
 		return lstatSync(path).isSymbolicLink();
 	} catch {

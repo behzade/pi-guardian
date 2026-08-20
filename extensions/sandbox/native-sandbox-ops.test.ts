@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -102,7 +102,7 @@ test("network-only and mixed denial hints stay grouped with three total examples
 	assert.equal(broker.requests.length, 1);
 });
 
-test("interruption closes the command-scoped network proxy", async () => {
+test("interruption aborts one nono command with its exact host snapshot", async () => {
 	let request: BrokerExecRequest | undefined;
 	let startedResolve!: () => void;
 	const started = new Promise<void>((resolve) => {
@@ -134,7 +134,7 @@ test("interruption closes the command-scoped network proxy", async () => {
 
 	assert.equal(request?.policy.network.mode, "proxy");
 	if (request?.policy.network.mode !== "proxy") throw new Error("proxy request missing");
-	assert.equal(existsSync(request.policy.network.unix_socket), false);
+	assert.deepEqual(request.policy.network.allowed_hosts, ["example.com"]);
 });
 
 test("filesystem grants are revalidated immediately before the broker request", async () => {

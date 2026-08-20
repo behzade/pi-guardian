@@ -1,0 +1,281 @@
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import {
+	accessSync,
+	closeSync,
+	constants,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	openSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { Effect, Schema } from "effect";
+import type {
+	BrokerExecRequest,
+	BrokerExecResult,
+	BrokerFilesystemRight,
+} from "./broker-client.ts";
+
+const READY_TIMEOUT_MS = 10_000;
+const SHUTDOWN_GRACE_MS = 500;
+const MACOS_LOCAL_NETWORK_RULES = [
+	'(allow network-bind (local ip "localhost:*"))',
+	'(allow network-inbound (local ip "localhost:*"))',
+	'(allow network-outbound (remote ip "localhost:*"))',
+] as const;
+
+export class NonoClientError extends Schema.TaggedError<NonoClientError>()(
+	"NonoClientError",
+	{ message: Schema.String, cause: Schema.optional(Schema.Defect()) },
+) {}
+
+const nonoError = (cause: unknown) => new NonoClientError({
+	message: cause instanceof Error ? cause.message : String(cause),
+	cause,
+});
+
+interface PendingProcess {
+	child: ChildProcessWithoutNullStreams;
+	profileDirectory: string;
+	outputBytes: number;
+	outputLimit: number;
+	truncated: boolean;
+}
+
+export class NonoClient {
+	readonly #path: string;
+	readonly #pending = new Map<string, PendingProcess>();
+	#closed = false;
+
+	private constructor(path: string) {
+		this.#path = path;
+	}
+
+	static async start(path: string): Promise<NonoClient> {
+		accessSync(path, constants.X_OK);
+		await checkNono(path);
+		return new NonoClient(path);
+	}
+
+	readonly execEffect = (
+		request: BrokerExecRequest,
+		onData: (data: Buffer) => void,
+		onStarted?: (pid: number) => void,
+	): Effect.Effect<BrokerExecResult, NonoClientError> =>
+		Effect.tryPromise({
+			try: (signal) => this.exec(request, onData, signal, onStarted),
+			catch: nonoError,
+		});
+
+	exec(
+		request: BrokerExecRequest,
+		onData: (data: Buffer) => void,
+		signal?: AbortSignal,
+		onStarted?: (pid: number) => void,
+	): Promise<BrokerExecResult> {
+		if (this.#closed) return Promise.reject(new Error("nono sandbox client is closed"));
+		if (this.#pending.has(request.id)) return Promise.reject(new Error(`Duplicate command ID: ${request.id}`));
+		const profileDirectory = mkdtempSync(join(tmpdir(), ".guardian-nono-"));
+		const profilePath = join(profileDirectory, "profile.json");
+		try {
+			prepareMissingRights([...request.policy.base_rights, ...request.policy.grants]);
+			writeFileSync(profilePath, `${JSON.stringify(buildNonoProfile(request), null, 2)}\n`, {
+				mode: 0o600,
+				flag: "wx",
+			});
+		} catch (error) {
+			rmSync(profileDirectory, { recursive: true, force: true });
+			return Promise.reject(error);
+		}
+
+		return new Promise((resolve, reject) => {
+			const child = spawn(this.#path, [
+				"--silent",
+				"run",
+				"--profile",
+				profilePath,
+				"--",
+				request.command.program,
+				...request.command.args,
+			], {
+				cwd: request.cwd,
+				env: request.env,
+				stdio: ["pipe", "pipe", "pipe"],
+				detached: true,
+			});
+			const pending: PendingProcess = {
+				child,
+				profileDirectory,
+				outputBytes: 0,
+				outputLimit: request.policy.output_limit_bytes,
+				truncated: false,
+			};
+			this.#pending.set(request.id, pending);
+			let timedOut = false;
+			let cancelled = false;
+			const timeout = request.timeout_ms === null
+				? undefined
+				: setTimeout(() => {
+					timedOut = true;
+					terminateGroup(child);
+				}, request.timeout_ms);
+			const abort = () => {
+				cancelled = true;
+				terminateGroup(child);
+			};
+			signal?.addEventListener("abort", abort, { once: true });
+			const emit = (chunk: Buffer) => {
+				const remaining = Math.max(0, pending.outputLimit - pending.outputBytes);
+				const visible = chunk.subarray(0, remaining);
+				pending.outputBytes += visible.length;
+				if (visible.length > 0) onData(visible);
+				if (visible.length < chunk.length) pending.truncated = true;
+			};
+			child.stdout.on("data", emit);
+			child.stderr.on("data", emit);
+			child.once("spawn", () => onStarted?.(child.pid ?? 0));
+			child.once("error", (error) => {
+				cleanup();
+				reject(error);
+			});
+			child.once("close", (code) => {
+				cleanup();
+				if (pending.truncated) onData(Buffer.from("\n[Sandbox output truncated at the configured limit]\n"));
+				if (cancelled || signal?.aborted) reject(new Error("aborted"));
+				else if (timedOut) reject(new Error(`timeout:${request.timeout_ms === null ? "nono" : request.timeout_ms / 1000}`));
+				else resolve({ exitCode: code ?? 1, denials: [], denialsComplete: false });
+			});
+
+			const cleanup = () => {
+				if (timeout) clearTimeout(timeout);
+				signal?.removeEventListener("abort", abort);
+				this.#pending.delete(request.id);
+				rmSync(profileDirectory, { recursive: true, force: true });
+			};
+		});
+	}
+
+	writeStdin(id: string, data: Buffer): void {
+		const pending = this.#pending.get(id);
+		if (!pending?.child.stdin.writable) throw new Error(`Command is not running: ${id}`);
+		pending.child.stdin.write(data);
+	}
+
+	cancel(id: string): void {
+		const pending = this.#pending.get(id);
+		if (pending) terminateGroup(pending.child);
+	}
+
+	async shutdown(): Promise<void> {
+		if (this.#closed) return;
+		this.#closed = true;
+		for (const pending of this.#pending.values()) terminateGroup(pending.child);
+		await new Promise((resolve) => setTimeout(resolve, SHUTDOWN_GRACE_MS));
+		for (const pending of this.#pending.values()) {
+			killGroup(pending.child, "SIGKILL");
+			rmSync(pending.profileDirectory, { recursive: true, force: true });
+		}
+		this.#pending.clear();
+	}
+}
+
+export function buildNonoProfile(request: BrokerExecRequest): Record<string, unknown> {
+	const rights = [...request.policy.base_rights, ...request.policy.grants];
+	const filesystem = {
+		allow: rightPaths(rights, "write", "tree"),
+		read: rightPaths(rights, "read", "tree"),
+		allow_file: rightPaths(rights, "write", "file"),
+		read_file: rightPaths(rights, "read", "file"),
+		unix_socket: [...request.policy.unix_socket_roots].sort(),
+		deny: [...new Set(request.policy.denies.map((deny) => deny.pattern))].sort(),
+	};
+	const network = request.policy.network;
+	const allowedHosts = network.mode === "proxy" ? (network.allowed_hosts ?? []) : [];
+	const allowLocal = network.mode === "loopback" || (network.mode === "proxy" && network.allow_local_binding);
+	return {
+		$schema: "https://nono.sh/schemas/nono-profile.schema.json",
+		extends: "default",
+		meta: {
+			name: "guardian-command",
+			version: "1",
+			description: "Ephemeral profile generated from a validated Guardian policy snapshot",
+		},
+		filesystem,
+		network: {
+			block: allowedHosts.length === 0,
+			allow_domain: allowedHosts,
+			...(allowLocal
+				? process.platform === "linux"
+					? { open_port: [0], open_port_range: [[1, 65_535]] }
+					: { open_port: [0] }
+				: {}),
+		},
+		...(allowLocal && process.platform === "darwin"
+			? { unsafe_macos_seatbelt_rules: MACOS_LOCAL_NETWORK_RULES }
+			: {}),
+	};
+}
+
+function rightPaths(
+	rights: readonly BrokerFilesystemRight[],
+	access: "read" | "write",
+	scope: "file" | "tree",
+): string[] {
+	return [...new Set(
+		rights
+			.filter((right) => right.access === access && right.scope === scope)
+			.map((right) => right.path),
+	)].sort();
+}
+
+function prepareMissingRights(rights: readonly BrokerFilesystemRight[]): void {
+	for (const right of rights) {
+		if (existsSync(right.path) || right.missing_path === "reject") continue;
+		if (right.missing_path === "create_tree") mkdirSync(right.path, { recursive: true, mode: 0o700 });
+		else {
+			mkdirSync(dirname(right.path), { recursive: true, mode: 0o700 });
+			closeSync(openSync(right.path, "wx", 0o600));
+		}
+	}
+}
+
+async function checkNono(path: string): Promise<void> {
+	await new Promise<void>((resolve, reject) => {
+		const child = spawn(path, ["setup", "--check-only"], {
+			stdio: ["ignore", "ignore", "pipe"],
+			env: process.env,
+		});
+		let error = "";
+		child.stderr.on("data", (chunk) => { if (error.length < 8_192) error += chunk.toString("utf8"); });
+		const timeout = setTimeout(() => {
+			child.kill("SIGKILL");
+			reject(new Error("nono readiness check timed out"));
+		}, READY_TIMEOUT_MS);
+		child.once("error", (cause) => {
+			clearTimeout(timeout);
+			reject(cause);
+		});
+		child.once("close", (code) => {
+			clearTimeout(timeout);
+			if (code === 0) resolve();
+			else reject(new Error(`nono readiness check failed (${code ?? "signal"}): ${error.trim()}`));
+		});
+	});
+}
+
+function terminateGroup(child: ChildProcessWithoutNullStreams): void {
+	killGroup(child, "SIGTERM");
+	setTimeout(() => killGroup(child, "SIGKILL"), SHUTDOWN_GRACE_MS).unref();
+}
+
+function killGroup(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
+	if (!child.pid) return;
+	try {
+		process.kill(-child.pid, signal);
+	} catch {
+		try { child.kill(signal); } catch { /* Process already exited. */ }
+	}
+}

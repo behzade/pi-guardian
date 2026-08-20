@@ -7,7 +7,8 @@ import {
 } from "node:fs";
 import { resolve } from "node:path";
 
-const PROJECT_POLICY_DIRECTORIES = [".pi", "extensions", "sandbox"] as const;
+const PROJECT_POLICY_DIRECTORIES = [".guardian"] as const;
+const LEGACY_PROJECT_POLICY_DIRECTORIES = [".pi", "extensions", "sandbox"] as const;
 
 export function projectPolicyPath(cwd: string): string {
 	return resolve(cwd, ...PROJECT_POLICY_DIRECTORIES, "sandbox.json");
@@ -17,11 +18,19 @@ export function readProjectPolicySource(cwd: string): string | null {
 	assertSafeProjectPolicyDirectories(cwd, "supply sandbox policy");
 	const path = projectPolicyPath(cwd);
 	const metadata = lstatIfExists(path);
-	if (!metadata) return null;
-	if (metadata.isSymbolicLink()) {
-		throw new Error(`A symlinked project sandbox policy is not allowed: ${path}`);
+	if (metadata) {
+		if (metadata.isSymbolicLink()) {
+			throw new Error(`A symlinked project sandbox policy is not allowed: ${path}`);
+		}
+		return readFileSync(path, "utf8");
 	}
-	return readFileSync(path, "utf8");
+	const legacy = resolve(cwd, ...LEGACY_PROJECT_POLICY_DIRECTORIES, "sandbox.json");
+	const legacyMetadata = lstatIfExists(legacy);
+	if (!legacyMetadata) return null;
+	if (legacyMetadata.isSymbolicLink()) {
+		throw new Error(`A symlinked legacy sandbox policy is not allowed: ${legacy}`);
+	}
+	return readFileSync(legacy, "utf8");
 }
 
 /** Writes trusted host policy bytes only if the exact approved source is current. */
@@ -45,16 +54,23 @@ export function writeProjectPolicySource(
 	renameSync(temporary, path);
 }
 
-function projectPolicyDirectories(cwd: string): string[] {
+function projectPolicyDirectories(
+	cwd: string,
+	parts: readonly string[] = PROJECT_POLICY_DIRECTORIES,
+): string[] {
 	const directories: string[] = [];
-	for (let length = 1; length <= PROJECT_POLICY_DIRECTORIES.length; length += 1) {
-		directories.push(resolve(cwd, ...PROJECT_POLICY_DIRECTORIES.slice(0, length)));
+	for (let length = 1; length <= parts.length; length += 1) {
+		directories.push(resolve(cwd, ...parts.slice(0, length)));
 	}
 	return directories;
 }
 
 function assertSafeProjectPolicyDirectories(cwd: string, action: string): void {
-	for (const directory of projectPolicyDirectories(cwd)) {
+	const directories = [
+		...projectPolicyDirectories(cwd),
+		...projectPolicyDirectories(cwd, LEGACY_PROJECT_POLICY_DIRECTORIES),
+	];
+	for (const directory of directories) {
 		const metadata = lstatIfExists(directory);
 		if (metadata?.isSymbolicLink()) {
 			throw new Error(`A symlinked project control folder cannot ${action}: ${directory}`);

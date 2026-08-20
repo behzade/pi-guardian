@@ -577,6 +577,7 @@ fn expand_globs(patterns: &[&str], cwd: &Path) -> Result<Vec<BTreeSet<PathBuf>>,
         let mut visited_targets = BTreeSet::from([(metadata.dev(), metadata.ino())]);
         let mut symlink_roots = VecDeque::new();
         scan_glob_roots(
+            &root,
             std::slice::from_ref(&root),
             follow_root,
             &ripgrep_globs,
@@ -592,6 +593,7 @@ fn expand_globs(patterns: &[&str], cwd: &Path) -> Result<Vec<BTreeSet<PathBuf>>,
                 .filter_map(|_| symlink_roots.pop_front())
                 .collect::<Vec<_>>();
             scan_glob_roots(
+                &root,
                 &batch,
                 true,
                 &[],
@@ -609,6 +611,7 @@ fn expand_globs(patterns: &[&str], cwd: &Path) -> Result<Vec<BTreeSet<PathBuf>>,
 
 #[allow(clippy::too_many_arguments)]
 fn scan_glob_roots(
+    policy_root: &Path,
     roots: &[PathBuf],
     follow_roots: bool,
     ripgrep_globs: &[String],
@@ -654,7 +657,9 @@ fn scan_glob_roots(
         let canonical = path.canonicalize().map_err(|error| {
             format!("cannot resolve glob symlink {}: {error}", path.display())
         })?;
-        if canonical.starts_with(Path::new("/nix/store")) {
+        if canonical.starts_with(Path::new("/nix/store"))
+            || canonical.starts_with(policy_root)
+        {
             return Ok(());
         }
         if visited_targets.insert((metadata.dev(), metadata.ino())) {
