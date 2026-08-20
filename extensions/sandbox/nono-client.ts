@@ -203,15 +203,14 @@ export function buildNonoProfile(
 	const rights = [...request.policy.base_rights, ...request.policy.grants];
 	const runtimeDeviceFiles = ["/dev/null", "/dev/zero", "/dev/random", "/dev/urandom"]
 		.filter(existsSync);
-	const runtimeConfigFiles = [
-		join(homedir(), ".gitconfig"),
-		join(homedir(), ".config", "git", "config"),
-	].filter(existsSync);
+	const runtimeConfigFiles = [join(homedir(), ".gitconfig")].filter(existsSync);
+	const runtimeConfigDirectories = [join(homedir(), ".config", "git")].filter(existsSync);
 	const filesystem = {
 		allow: rightPaths(rights, "write", "tree"),
 		read: [...new Set([
 			...rightPaths(rights, "read", "tree"),
 			...(existsSync("/nix/store") ? ["/nix/store"] : []),
+			...runtimeConfigDirectories,
 		])].sort(),
 		allow_file: [...new Set([
 			...rightPaths(rights, "write", "file"),
@@ -222,7 +221,7 @@ export function buildNonoProfile(
 			...runtimeDeviceFiles,
 			...runtimeConfigFiles,
 		])].sort(),
-		bypass_protection: runtimeConfigFiles,
+		bypass_protection: [...runtimeConfigFiles, ...runtimeConfigDirectories],
 		unix_socket: [...request.policy.unix_socket_roots].sort(),
 		deny: platform === "linux"
 			? []
