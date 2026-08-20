@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import test from "node:test";
 import type { BrokerExecRequest } from "./broker-client.ts";
 import { buildNonoProfile } from "./nono-client.ts";
@@ -33,7 +34,7 @@ test("profile maps exact filesystem scopes and blocks network by default", () =>
 		network: { block: boolean; allow_domain: string[] };
 	};
 	assert.deepEqual(profile.filesystem.allow, ["/work"]);
-	assert.deepEqual(profile.filesystem.read, ["/work"]);
+	assert.deepEqual(profile.filesystem.read, existsSync("/nix/store") ? ["/nix/store", "/work"] : ["/work"]);
 	assert.deepEqual(profile.filesystem.read_file, ["/outside/input.txt"]);
 	assert.equal(profile.network.block, true);
 	assert.deepEqual(profile.network.allow_domain, []);

@@ -203,7 +203,10 @@ export function buildNonoProfile(
 	const rights = [...request.policy.base_rights, ...request.policy.grants];
 	const filesystem = {
 		allow: rightPaths(rights, "write", "tree"),
-		read: rightPaths(rights, "read", "tree"),
+		read: [...new Set([
+			...rightPaths(rights, "read", "tree"),
+			...(existsSync("/nix/store") ? ["/nix/store"] : []),
+		])].sort(),
 		allow_file: rightPaths(rights, "write", "file"),
 		read_file: rightPaths(rights, "read", "file"),
 		unix_socket: [...request.policy.unix_socket_roots].sort(),
