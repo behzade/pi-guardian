@@ -10,7 +10,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Effect, Schema } from "effect";
 import type {
@@ -203,6 +203,10 @@ export function buildNonoProfile(
 	const rights = [...request.policy.base_rights, ...request.policy.grants];
 	const runtimeDeviceFiles = ["/dev/null", "/dev/zero", "/dev/random", "/dev/urandom"]
 		.filter(existsSync);
+	const runtimeConfigFiles = [
+		join(homedir(), ".gitconfig"),
+		join(homedir(), ".config", "git", "config"),
+	].filter(existsSync);
 	const filesystem = {
 		allow: rightPaths(rights, "write", "tree"),
 		read: [...new Set([
@@ -216,7 +220,9 @@ export function buildNonoProfile(
 		read_file: [...new Set([
 			...rightPaths(rights, "read", "file"),
 			...runtimeDeviceFiles,
+			...runtimeConfigFiles,
 		])].sort(),
+		bypass_protection: runtimeConfigFiles,
 		unix_socket: [...request.policy.unix_socket_roots].sort(),
 		deny: platform === "linux"
 			? []
