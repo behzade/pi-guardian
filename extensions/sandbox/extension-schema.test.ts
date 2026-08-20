@@ -45,7 +45,8 @@ test("request_access owns every durable access request variant", () => {
 	const schema = schemaSource.slice(requestStart, bashStart);
 	assert.match(schema, /Type\.Literal\("filesystem"\)/);
 	assert.match(schema, /Type\.Literal\("network_host"\)/);
-	assert.match(schema, /Type\.Literal\("network_local"\)/);
+	assert.match(schema, /Type\.Literal\("network_endpoint"\)/);
+	assert.match(schema, /minimum: 1, maximum: 65_535/);
 	assert.match(schema, /Type\.Literal\("development_cache"\)/);
 	assert.match(indexSource, /name: "request_access"/);
 	assert.doesNotMatch(indexSource, /name: "request_network_permission"/);

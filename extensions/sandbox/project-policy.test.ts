@@ -49,22 +49,34 @@ test("loads and saves one portable versioned project policy under Guardian's con
 	assert(loaded.filesystem.some((right) => right.path === join(cwd, "state") && right.directory));
 });
 
-test("activates network_local, exact hosts, file rights, and tree rights", () => {
+test("activates exact loopback endpoints, hosts, file rights, and tree rights", () => {
 	const cwd = workspace();
 	writeFileSync(join(cwd, "input.txt"), "input");
 	const active = activateProjectPolicy({
 		version: 1,
 		rights: [
-			{ kind: "network_local" },
+			{ kind: "network_endpoint", host: "127.0.0.1", port: 43127 },
+			{ kind: "network_endpoint", host: "::1", port: 43127 },
 			{ kind: "network_host", host: "registry.npmjs.org" },
 			{ kind: "filesystem", access: "read", path: "input.txt", scope: "file" },
 			{ kind: "filesystem", access: "write", path: "output", scope: "tree" },
 		],
 	}, cwd, machine);
-	assert.equal(active.allowLocalBinding, true);
+	assert.deepEqual(active.localPorts, [43127]);
 	assert.deepEqual(active.networkHosts, ["registry.npmjs.org"]);
 	assert(active.filesystem.some((right) => right.kind === "read" && !right.directory));
 	assert(active.filesystem.some((right) => right.kind === "write" && right.directory));
+	assert.deepEqual(active.policy.rights.find((right) => right.kind === "network_endpoint"), {
+		kind: "network_endpoint",
+		host: "localhost",
+		port: 43127,
+	});
+	for (const endpoint of [
+		{ kind: "network_endpoint", host: "192.0.2.1", port: 43127 },
+		{ kind: "network_endpoint", host: "127.0.0.1", port: 0 },
+	] as const) {
+		assert.throws(() => activateProjectPolicy({ version: 1, rights: [endpoint] }, cwd, machine), /network_endpoint/);
+	}
 	assert.throws(() => activateProjectPolicy({
 		version: 1,
 		rights: [{ kind: "filesystem", access: "read", path: "missing.txt", scope: "file" }],
@@ -256,7 +268,7 @@ test("policy reconciliation activates removals without activating new disk right
 	const active: ProjectSandboxPolicy = {
 		version: 1,
 		rights: [
-			{ kind: "network_local" },
+			{ kind: "network_endpoint", host: "localhost", port: 3000 },
 			{ kind: "network_host", host: "kept.example" },
 		],
 		developmentCache: { environment: { KEPT_CACHE: "kept", REMOVED_CACHE: "removed" } },
@@ -288,7 +300,10 @@ test("policy reconciliation activates removals without activating new disk right
 test("policy updates reload pre-approval edits but reject edits made during approval", () => {
 	const cwd = workspace();
 	const initial = saveProjectPolicy(cwd, basePolicy());
-	const changed = { version: 1 as const, rights: [{ kind: "network_local" as const }] };
+	const changed = {
+		version: 1 as const,
+		rights: [{ kind: "network_endpoint" as const, host: "localhost" as const, port: 3000 }],
+	};
 	const changedSource = saveProjectPolicy(cwd, changed);
 	const current = loadProjectPolicyForUpdate(cwd, machine);
 	assert.equal(current.sourceText, changedSource);

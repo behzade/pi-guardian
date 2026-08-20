@@ -22,11 +22,6 @@ import { buildLinuxDenyLaunch } from "./linux-deny-layer.ts";
 
 const READY_TIMEOUT_MS = 10_000;
 const SHUTDOWN_GRACE_MS = 500;
-const MACOS_LOCAL_NETWORK_RULES = [
-	'(allow network-bind (local ip "localhost:*"))',
-	'(allow network-inbound (local ip "localhost:*"))',
-	'(allow network-outbound (remote ip "localhost:*"))',
-] as const;
 
 export class NonoClientError extends Schema.TaggedError<NonoClientError>()(
 	"NonoClientError",
@@ -228,8 +223,12 @@ export function buildNonoProfile(
 			: [...new Set(request.policy.denies.map((deny) => deny.pattern))].sort(),
 	};
 	const network = request.policy.network;
-	const allowedHosts = network.mode === "proxy" ? (network.allowed_hosts ?? []) : [];
-	const allowLocal = network.mode === "loopback" || (network.mode === "proxy" && network.allow_local_binding);
+	const allowedHosts = network.mode === "proxy" ? network.allowed_hosts : [];
+	const localPorts = network.mode === "blocked"
+		? []
+		: network.mode === "loopback"
+			? network.ports
+			: network.local_ports;
 	return {
 		$schema: "https://nono.sh/schemas/nono-profile.schema.json",
 		extends: "default",
@@ -242,15 +241,8 @@ export function buildNonoProfile(
 		network: {
 			block: allowedHosts.length === 0,
 			allow_domain: allowedHosts,
-			...(allowLocal
-				? platform === "linux"
-					? { open_port: [0], open_port_range: [[1, 65_535]] }
-					: { open_port: [0] }
-				: {}),
+			...(localPorts.length > 0 ? { open_port: localPorts } : {}),
 		},
-		...(allowLocal && platform === "darwin"
-			? { unsafe_macos_seatbelt_rules: MACOS_LOCAL_NETWORK_RULES }
-			: {}),
 	};
 }
 

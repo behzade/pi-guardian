@@ -31,7 +31,7 @@ export type ProjectAccessRight =
 			scope: "file" | "tree";
 	  }
 	| { kind: "network_host"; host: string }
-	| { kind: "network_local" };
+	| { kind: "network_endpoint"; host: string; port: number };
 
 export type ProjectAccessRequest = ProjectAccessRight | { kind: "development_cache"; environment: Record<string, string> };
 
@@ -45,7 +45,7 @@ export interface ActiveProjectPolicy {
 	policy: ProjectSandboxPolicy;
 	filesystem: IoPermission[];
 	networkHosts: string[];
-	allowLocalBinding: boolean;
+	localPorts: number[];
 	config: NativeSandboxConfig;
 	/** Exact file bytes loaded or written by the trusted host; null means absent. */
 	sourceText: string | null;
@@ -82,13 +82,16 @@ export function activateProjectPolicy(
 	const config = withProjectCacheEnvironment(globalConfig, normalized);
 	const filesystem: IoPermission[] = [];
 	const networkHosts = new Set<string>();
-	let allowLocalBinding = false;
+	const localPorts = new Set<number>();
 	for (const right of normalized.rights) {
-		if (right.kind === "network_local") {
+		if (right.kind === "network_endpoint") {
 			if (config.network?.enabled === false) {
-				throw new Error("network_local is denied by the machine sandbox policy");
+				throw new Error(`${right.host}:${right.port} is denied because network access is disabled by machine policy`);
 			}
-			allowLocalBinding = true;
+			if ((config.network?.deniedDomains ?? []).some((rule) => networkRuleMatches(rule, right.host))) {
+				throw new Error(`${right.host}:${right.port} is denied by the machine sandbox policy`);
+			}
+			localPorts.add(right.port);
 			continue;
 		}
 		if (right.kind === "network_host") {
@@ -107,7 +110,7 @@ export function activateProjectPolicy(
 		policy: normalized,
 		filesystem,
 		networkHosts: [...networkHosts].sort(),
-		allowLocalBinding,
+		localPorts: [...localPorts].sort((left, right) => left - right),
 		config,
 		sourceText,
 	};
@@ -334,11 +337,19 @@ function normalizeRight(value: unknown): ProjectAccessRight {
 		if (typeof right.host !== "string") throw new Error("network_host host must be a string");
 		return { kind: "network_host", host: normalizeNetworkHost(right.host) };
 	}
-	if (right.kind === "network_local") {
-		assertKnownKeys(right, ["kind"], "network_local right");
-		return { kind: "network_local" };
+	if (right.kind === "network_endpoint") {
+		assertKnownKeys(right, ["kind", "host", "port"], "network_endpoint right");
+		if (typeof right.host !== "string") throw new Error("network_endpoint host must be a string");
+		const host = normalizeNetworkHost(right.host);
+		if (!["localhost", "127.0.0.1", "::1"].includes(host)) {
+			throw new Error("network_endpoint host must be localhost, 127.0.0.1, or ::1");
+		}
+		if (!Number.isInteger(right.port) || (right.port as number) < 1 || (right.port as number) > 65_535) {
+			throw new Error("network_endpoint port must be an integer from 1 to 65535");
+		}
+		return { kind: "network_endpoint", host: "localhost", port: right.port as number };
 	}
-	throw new Error("project sandbox right kind must be filesystem, network_host, or network_local");
+	throw new Error("project sandbox right kind must be filesystem, network_host, or network_endpoint");
 }
 
 function activateFilesystemRight(

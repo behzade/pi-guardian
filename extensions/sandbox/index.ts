@@ -135,9 +135,9 @@ export default function (pi: ExtensionAPI) {
 		name: "request_access",
 		label: "Request project access",
 		description:
-			"Ask the user to add a batch of portable filesystem, network, and/or managed development-cache adapter entries to checked-in .guardian/sandbox.json. This host tool updates policy only; it never runs or retries a command.",
+			"Ask the user to add a batch of portable filesystem, exact network host or loopback endpoint, and/or managed development-cache adapter entries to checked-in .guardian/sandbox.json. This host tool updates policy only; it never runs or retries a command.",
 		promptSnippet:
-			"After a sandbox denial, use request_access for the smallest useful project/home file tree, exact host, local network, or development_cache environment mapping. If approved, explicitly rerun later.",
+			"After a sandbox denial, use request_access for the smallest useful project/home file tree, exact host, exact loopback endpoint, or development_cache environment mapping. If approved, explicitly rerun later.",
 		parameters: RequestAccessParams,
 		executionMode: "sequential",
 		async execute(toolCallId, params, signal, _onUpdate, ctx) {
@@ -289,7 +289,7 @@ export default function (pi: ExtensionAPI) {
 						permissions: projectAtStart.filesystem,
 						revalidatePermissions: () => revalidateProject(projectAtStart).filesystem,
 						networkHosts: networkHosts(projectAtStart),
-						allowLocalBinding: projectAtStart.allowLocalBinding,
+						localPorts: projectAtStart.localPorts,
 					}, signal);
 				} else if (validated.action === "list") output = backgroundJobs.list();
 				else if (validated.action === "status") output = backgroundJobs.status(validated.name);
@@ -325,8 +325,8 @@ export default function (pi: ExtensionAPI) {
 				projectAtStart.config,
 				projectAtStart.filesystem,
 				networkHosts(projectAtStart),
+				projectAtStart.localPorts,
 				id,
-				projectAtStart.allowLocalBinding,
 				() => revalidateProject(projectAtStart).filesystem,
 			);
 			return createBashTool(localCwd, { operations }).execute(id, params, signal, onUpdate);
@@ -389,8 +389,8 @@ export default function (pi: ExtensionAPI) {
 						projectAtStart.config,
 						projectAtStart.filesystem,
 						networkHosts(projectAtStart),
+						projectAtStart.localPorts,
 						`user-bash-${++userBashCounter}-${randomUUID()}`,
-						projectAtStart.allowLocalBinding,
 						() => revalidateProject(projectAtStart).filesystem,
 					),
 				};
@@ -469,7 +469,7 @@ export default function (pi: ExtensionAPI) {
 				`  Project policy: ${projectPolicyPath(ctx.cwd)}`,
 				`  Project rights: ${activeProject?.policy.rights.map(rightLabel).join(", ") || "(none)"}`,
 				`  Network hosts: ${networkHosts().join(", ") || "(blocked)"}`,
-				`  Local network: ${activeProject?.allowLocalBinding ? "allowed" : "blocked"}`,
+				`  Loopback ports: ${activeProject?.localPorts.join(", ") || "(blocked)"}`,
 				`  Development cache: ${developmentCacheRoot(sandboxState.config.developmentCache)}`,
 				"  Denials: bounded diagnostics; no automatic retry",
 			].join("\n"), "info");
@@ -517,5 +517,5 @@ function toolLexicalPath(event: ToolCallEvent, cwd: string): string | undefined 
 function rightLabel(right: ProjectAccessRight): string {
 	if (right.kind === "filesystem") return `${right.access} ${right.scope} ${right.path}`;
 	if (right.kind === "network_host") return `host ${right.host}`;
-	return "local network";
+	return `endpoint ${right.host}:${right.port}`;
 }

@@ -37,13 +37,11 @@ export interface SandboxExecRequest {
 		denies: SandboxFilesystemDeny[];
 		network:
 			| { mode: "blocked" }
-			| { mode: "loopback" }
+			| { mode: "loopback"; ports: number[] }
 			| {
 					mode: "proxy";
-					tcp_port: number;
-					unix_socket: string;
-					allow_local_binding: boolean;
-					allowed_hosts?: string[];
+					allowed_hosts: string[];
+					local_ports: number[];
 			  };
 		unix_socket_roots: string[];
 		output_limit_bytes: number;

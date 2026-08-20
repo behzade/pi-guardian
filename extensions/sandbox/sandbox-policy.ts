@@ -31,13 +31,13 @@ export function buildSandboxExecRequest(
 	config: NativeSandboxConfig,
 	permissions: readonly NativeFilePermission[],
 	networkHosts: readonly string[],
-	proxy?: { port: number; socketPath: string },
-	allowLocalBinding = false,
+	localPorts: readonly number[] = [],
 ): SandboxExecRequest {
 	const effective = mergeGlobalConfig(DEFAULT_CONFIG, config);
-	if (proxy !== undefined && networkHosts.length === 0) {
-		throw new Error("Network proxy state requires at least one allowed host");
+	if (localPorts.some((port) => !Number.isInteger(port) || port < 1 || port > 65_535)) {
+		throw new Error("Local network ports must be integers from 1 to 65535");
 	}
+	const ports = [...new Set(localPorts)].sort((left, right) => left - right);
 	if (effective.network?.allowAllUnixSockets) {
 		throw new Error("The native sandbox does not support allowing all Unix sockets");
 	}
@@ -70,13 +70,11 @@ export function buildSandboxExecRequest(
 			network: networkHosts.length > 0
 				? {
 						mode: "proxy",
-						tcp_port: proxy?.port ?? 1,
-						unix_socket: proxy?.socketPath ?? "/unused-by-nono",
-						allow_local_binding: allowLocalBinding,
 						allowed_hosts: [...networkHosts],
+						local_ports: ports,
 					}
-				: allowLocalBinding
-					? { mode: "loopback" }
+				: ports.length > 0
+					? { mode: "loopback", ports }
 					: { mode: "blocked" },
 			unix_socket_roots: unixSocketRoots(effective),
 			output_limit_bytes: OUTPUT_LIMIT_BYTES,

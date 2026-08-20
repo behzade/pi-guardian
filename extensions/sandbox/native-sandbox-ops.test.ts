@@ -30,7 +30,7 @@ test("one failed command makes exactly one executor request and returns a bounde
 		denialsComplete: false,
 	});
 	const output: Buffer[] = [];
-	const operations = createNativeSandboxOps(executor, DEFAULT_CONFIG, [], [], "tool-one-run");
+	const operations = createNativeSandboxOps(executor, DEFAULT_CONFIG, [], [], [], "tool-one-run");
 	const result = await operations.exec("failing-tool", cwd, { onData: (data) => output.push(data) });
 	const text = Buffer.concat(output).toString("utf8");
 	assert.equal(result.exitCode, 1);
@@ -56,7 +56,7 @@ test("known host development caches recommend the managed cache adapter", async 
 		denialsComplete: true,
 	});
 	const output: Buffer[] = [];
-	await createNativeSandboxOps(executor, DEFAULT_CONFIG, [], [], "cache-denial").exec("cargo build", cwd, {
+	await createNativeSandboxOps(executor, DEFAULT_CONFIG, [], [], [], "cache-denial").exec("cargo build", cwd, {
 		onData: (data) => output.push(data),
 	});
 	const text = Buffer.concat(output).toString("utf8");
@@ -72,7 +72,7 @@ test("network-only and mixed denial hints stay grouped with three total examples
 	], false);
 	assert.match(networkOnly ?? "", /network access: 1/);
 	assert.match(networkOnly ?? "", /example: process curl/);
-	assert.match(networkOnly ?? "", /exact network host, or network_local/);
+	assert.match(networkOnly ?? "", /exact network host, or exact loopback endpoint/);
 
 	const cwd = mkdtempSync(join(tmpdir(), "pi-mixed-denial-"));
 	const executor = new FakeSandboxExecutor({
@@ -87,7 +87,7 @@ test("network-only and mixed denial hints stay grouped with three total examples
 		denialsComplete: false,
 	});
 	const output: Buffer[] = [];
-	await createNativeSandboxOps(executor, DEFAULT_CONFIG, [], [], "mixed-denial").exec("tool", cwd, {
+	await createNativeSandboxOps(executor, DEFAULT_CONFIG, [], [], [], "mixed-denial").exec("tool", cwd, {
 		onData: (data) => output.push(data),
 	});
 	const text = Buffer.concat(output).toString("utf8");
@@ -96,7 +96,7 @@ test("network-only and mixed denial hints stay grouped with three total examples
 	assert.match(text, /write access/);
 	assert.match(text, /network access: 2/);
 	assert.match(text, /development_cache environment mapping/);
-	assert.match(text, /smallest portable file\/tree, exact network host, or network_local/);
+	assert.match(text, /smallest portable file\/tree, exact network host, or exact loopback endpoint/);
 	assert.equal((text.match(/  example:/g) ?? []).length, 3);
 	assert.doesNotMatch(text, /\/dev\/null/);
 	assert.equal(executor.requests.length, 1);
@@ -123,6 +123,7 @@ test("interruption aborts one nono command with its exact host snapshot", async 
 		DEFAULT_CONFIG,
 		[],
 		["example.com"],
+		[],
 		"interrupt-cleanup",
 	).exec("sleep", tmpdir(), {
 		onData() {},
@@ -145,8 +146,8 @@ test("filesystem grants are revalidated immediately before the executor request"
 		DEFAULT_CONFIG,
 		[],
 		[],
+		[],
 		"revalidate",
-		false,
 		() => { throw new Error("approved path became a symlink"); },
 	);
 	await assert.rejects(

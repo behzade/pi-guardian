@@ -85,7 +85,7 @@ export function formatDenialSummary(
 	}
 	if (hasGeneralAccess) {
 		lines.push(
-			"Use request_access for the smallest portable file/tree, exact network host, or network_local right, then explicitly rerun the command.",
+			"Use request_access for the smallest portable file/tree, exact network host, or exact loopback endpoint right, then explicitly rerun the command.",
 		);
 	}
 	lines.push("No command was retried.");

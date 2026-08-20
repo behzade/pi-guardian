@@ -54,21 +54,21 @@ test("Linux delegates overlapping denies to the mount layer while macOS keeps Se
 test("profile maps exact hosts without enabling unrestricted network", () => {
 	const profile = buildNonoProfile(request({
 		mode: "proxy",
-		tcp_port: 1,
-		unix_socket: "/unused",
-		allow_local_binding: false,
 		allowed_hosts: ["api.example.com", "192.0.2.1"],
-	})) as { network: { block: boolean; allow_domain: string[] } };
+		local_ports: [3000],
+	})) as { network: { block: boolean; allow_domain: string[]; open_port: number[] } };
 	assert.equal(profile.network.block, false);
 	assert.deepEqual(profile.network.allow_domain, ["api.example.com", "192.0.2.1"]);
+	assert.deepEqual(profile.network.open_port, [3000]);
 });
 
-test("Linux local network maps to the complete localhost port range", {
-	skip: process.platform !== "linux",
-}, () => {
-	const profile = buildNonoProfile(request({ mode: "loopback" })) as {
-		network: { open_port: number[]; open_port_range: number[][] };
-	};
-	assert.deepEqual(profile.network.open_port, [0]);
-	assert.deepEqual(profile.network.open_port_range, [[1, 65_535]]);
+test("local endpoints map only their exact approved ports", () => {
+	for (const platform of ["linux", "darwin"] as const) {
+		const profile = buildNonoProfile(
+			request({ mode: "loopback", ports: [3000, 43127] }),
+			platform,
+		) as { network: { open_port: number[]; open_port_range?: unknown } };
+		assert.deepEqual(profile.network.open_port, [3000, 43127]);
+		assert.equal(profile.network.open_port_range, undefined);
+	}
 });

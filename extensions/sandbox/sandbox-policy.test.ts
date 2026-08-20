@@ -207,7 +207,7 @@ test("native deny globs reject dot segments before reaching Rust", () => {
 	}
 });
 
-test("nono policy maps approved hosts and local network", () => {
+test("nono policy maps approved hosts and exact loopback ports", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-sandbox-policy-"));
 	const proxied = buildSandboxExecRequest(
 		"one",
@@ -217,14 +217,12 @@ test("nono policy maps approved hosts and local network", () => {
 		DEFAULT_CONFIG,
 		[],
 		["example.com"],
-		{ port: 43127, socketPath: "/tmp/pi-proxy.sock" },
+		[],
 	);
 	assert.deepEqual(proxied.policy.network, {
 		mode: "proxy",
-		tcp_port: 43127,
-		unix_socket: "/tmp/pi-proxy.sock",
-		allow_local_binding: false,
 		allowed_hosts: ["example.com"],
+		local_ports: [],
 	});
 	const local = buildSandboxExecRequest(
 		"local",
@@ -234,10 +232,9 @@ test("nono policy maps approved hosts and local network", () => {
 		DEFAULT_CONFIG,
 		[],
 		[],
-		undefined,
-		true,
+		[43127],
 	);
-	assert.deepEqual(local.policy.network, { mode: "loopback" });
+	assert.deepEqual(local.policy.network, { mode: "loopback", ports: [43127] });
 	const localAndProxy = buildSandboxExecRequest(
 		"local-and-proxy",
 		"true",
@@ -246,16 +243,17 @@ test("nono policy maps approved hosts and local network", () => {
 		DEFAULT_CONFIG,
 		[],
 		["example.com"],
-		{ port: 43127, socketPath: "/tmp/pi-proxy.sock" },
-		true,
+		[43127],
 	);
 	assert.deepEqual(localAndProxy.policy.network, {
 		mode: "proxy",
-		tcp_port: 43127,
-		unix_socket: "/tmp/pi-proxy.sock",
-		allow_local_binding: true,
 		allowed_hosts: ["example.com"],
+		local_ports: [43127],
 	});
+	assert.throws(
+		() => buildSandboxExecRequest("invalid", "true", cwd, undefined, DEFAULT_CONFIG, [], [], [0]),
+		/ports must be integers from 1 to 65535/,
+	);
 	const request = buildSandboxExecRequest(
 		"one",
 		"true",

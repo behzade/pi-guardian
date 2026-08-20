@@ -42,8 +42,8 @@ export const executeNativeSandboxCommand = Effect.fn("Sandbox.executeNativeComma
 		config: NativeSandboxConfig;
 		permissions: readonly NativeFilePermission[];
 		networkHosts: readonly string[];
+		localPorts: readonly number[];
 		commandId: string;
-		allowLocalBinding: boolean;
 		revalidatePermissions?: () => readonly NativeFilePermission[];
 		command: string;
 		cwd: string;
@@ -60,8 +60,7 @@ export const executeNativeSandboxCommand = Effect.fn("Sandbox.executeNativeComma
 				params.config,
 				params.revalidatePermissions?.() ?? params.permissions,
 				params.networkHosts,
-				undefined,
-				params.allowLocalBinding,
+				params.localPorts,
 			),
 			catch: sandboxError,
 		});
@@ -85,8 +84,8 @@ export function createNativeSandboxOps(
 	config: NativeSandboxConfig,
 	permissions: readonly NativeFilePermission[],
 	networkHosts: readonly string[],
+	localPorts: readonly number[],
 	commandId: string,
-	allowLocalBinding = false,
 	revalidatePermissions?: () => readonly NativeFilePermission[],
 ): BashOperations {
 	return {
@@ -96,8 +95,8 @@ export function createNativeSandboxOps(
 				config,
 				permissions,
 				networkHosts,
+				localPorts,
 				commandId,
-				allowLocalBinding,
 				revalidatePermissions,
 				command,
 				cwd,

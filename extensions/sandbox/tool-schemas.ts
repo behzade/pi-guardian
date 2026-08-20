@@ -20,7 +20,14 @@ const AccessRightParams = Type.Union([
 		},
 		{ additionalProperties: false },
 	),
-	Type.Object({ kind: Type.Literal("network_local") }, { additionalProperties: false }),
+	Type.Object(
+		{
+			kind: Type.Literal("network_endpoint"),
+			host: Type.String({ description: "Loopback host: localhost, 127.0.0.1, or ::1" }),
+			port: Type.Integer({ minimum: 1, maximum: 65_535 }),
+		},
+		{ additionalProperties: false },
+	),
 	Type.Object(
 		{
 			kind: Type.Literal("development_cache"),

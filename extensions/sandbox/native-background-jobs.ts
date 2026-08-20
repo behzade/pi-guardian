@@ -37,7 +37,7 @@ interface StartOptions {
 	permissions: readonly NativeFilePermission[];
 	revalidatePermissions?: () => readonly NativeFilePermission[];
 	networkHosts: readonly string[];
-	allowLocalBinding?: boolean;
+	localPorts: readonly number[];
 }
 
 export class NativeBackgroundJobs {
@@ -71,8 +71,7 @@ export class NativeBackgroundJobs {
 				options.config,
 				options.revalidatePermissions?.() ?? options.permissions,
 				options.networkHosts,
-				undefined,
-				options.allowLocalBinding ?? false,
+				options.localPorts,
 			),
 			catch: jobError,
 		});

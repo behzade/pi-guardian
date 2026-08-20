@@ -28,7 +28,7 @@ Project rights retain the version 1 schema:
 
 - exact file or tree `read`/`write` rights;
 - exact `network_host` rights;
-- `network_local`;
+- exact loopback `network_endpoint` host/port rights;
 - managed development-cache environment mappings.
 
 Commands receive one immutable policy snapshot. Policy changes never retry a
@@ -43,9 +43,8 @@ maps:
 - read trees/files to nono read capabilities;
 - write trees/files to nono read-write capabilities;
 - exact hosts to nono proxy allow entries;
-- Linux `network_local` to the localhost port range;
-- macOS `network_local` to nono's port-zero support plus reviewed localhost
-  Seatbelt rules.
+- each approved loopback `network_endpoint` to its exact nono `open_port` entry
+  on Linux and macOS.
 
 Linux Landlock is additive and cannot subtract `.env`, key, or control paths
 from an allowed workspace. Guardian therefore expands only deny globs beneath
