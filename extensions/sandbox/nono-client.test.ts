@@ -35,7 +35,9 @@ test("profile maps exact filesystem scopes and blocks network by default", () =>
 	};
 	assert.deepEqual(profile.filesystem.allow, ["/work"]);
 	assert.deepEqual(profile.filesystem.read, existsSync("/nix/store") ? ["/nix/store", "/work"] : ["/work"]);
-	assert.deepEqual(profile.filesystem.read_file, ["/outside/input.txt"]);
+	const devices = ["/dev/null", "/dev/random", "/dev/urandom", "/dev/zero"].filter(existsSync).sort();
+	assert.deepEqual(profile.filesystem.allow_file, devices);
+	assert.deepEqual(profile.filesystem.read_file, [...devices, "/outside/input.txt"].sort());
 	assert.equal(profile.network.block, true);
 	assert.deepEqual(profile.network.allow_domain, []);
 });

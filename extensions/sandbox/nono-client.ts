@@ -201,14 +201,22 @@ export function buildNonoProfile(
 	platform: NodeJS.Platform = process.platform,
 ): Record<string, unknown> {
 	const rights = [...request.policy.base_rights, ...request.policy.grants];
+	const runtimeDeviceFiles = ["/dev/null", "/dev/zero", "/dev/random", "/dev/urandom"]
+		.filter(existsSync);
 	const filesystem = {
 		allow: rightPaths(rights, "write", "tree"),
 		read: [...new Set([
 			...rightPaths(rights, "read", "tree"),
 			...(existsSync("/nix/store") ? ["/nix/store"] : []),
 		])].sort(),
-		allow_file: rightPaths(rights, "write", "file"),
-		read_file: rightPaths(rights, "read", "file"),
+		allow_file: [...new Set([
+			...rightPaths(rights, "write", "file"),
+			...runtimeDeviceFiles,
+		])].sort(),
+		read_file: [...new Set([
+			...rightPaths(rights, "read", "file"),
+			...runtimeDeviceFiles,
+		])].sort(),
 		unix_socket: [...request.policy.unix_socket_roots].sort(),
 		deny: platform === "linux"
 			? []

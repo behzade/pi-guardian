@@ -66,7 +66,7 @@ export function buildBrokerExecRequest(
 		policy: {
 			base_rights: baseRights(effective, actualCwd),
 			grants: permissions.map(permissionRight),
-			denies: denyRules(effective, actualCwd),
+			denies: denyRules(effective, actualCwd, permissions),
 			network: networkHosts.length > 0
 				? {
 						mode: "proxy",
@@ -187,6 +187,7 @@ function permissionRight(permission: NativeFilePermission): BrokerFilesystemRigh
 function denyRules(
 	config: NativeSandboxConfig,
 	cwd: string,
+	permissions: readonly NativeFilePermission[],
 ): BrokerFilesystemDeny[] {
 	const rules = new Map<string, BrokerFilesystemDeny>();
 	for (const [access, entries] of [
@@ -206,7 +207,13 @@ function denyRules(
 			});
 		}
 	}
-	return [...rules.values()];
+	return [...rules.values()].filter((deny) => !permissions.some((permission) =>
+		permission.kind === "write" &&
+		permission.directory &&
+		deny.access === "write" &&
+		deny.scope !== "glob" &&
+		(resolve(deny.pattern) === resolve(permission.path) || resolve(deny.pattern).startsWith(`${resolve(permission.path)}/`)),
+	));
 }
 
 function normalizeDeny(
