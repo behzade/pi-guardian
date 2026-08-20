@@ -54,7 +54,8 @@ const MAX_PROTECTED_PATHS: usize = 8_192;
 const MAX_GLOB_MATCHES: usize = 8_192;
 const MAX_SCAN_DURATION: Duration = Duration::from_secs(30);
 const MAX_SCAN_PATH_BYTES: usize = 16 * 1_024;
-const MAX_SCAN_SYMLINK_ROOTS: usize = 1_024;
+const MAX_SCAN_SYMLINK_ROOTS: usize = 8_192;
+const SYMLINK_SCAN_BATCH_SIZE: usize = 64;
 const PROTECTED_METADATA_NAMES: [&str; 2] = [".git", ".pi"];
 const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
 pub const PROXY_LOOPBACK_PORT: u16 = 31_128;
@@ -360,7 +361,8 @@ fn protected_workspace_paths(
         "(", "-name", ".git", "-o", "-name", ".pi", ")", "-print0", "-prune",
     ]);
     let mut paths = Vec::new();
-    scan_command_paths("find", command, cwd, &[], |path| {
+    let roots = [cwd.to_path_buf()];
+    scan_command_paths("find", command, &roots, &[], |path| {
         let file_type = path
             .symlink_metadata()
             .map_err(|error| format!("cannot inspect control path {}: {error}", path.display()))?
@@ -574,8 +576,8 @@ fn expand_globs(patterns: &[&str], cwd: &Path) -> Result<Vec<BTreeSet<PathBuf>>,
             .is_ok_and(|metadata| metadata.file_type().is_symlink());
         let mut visited_targets = BTreeSet::from([(metadata.dev(), metadata.ino())]);
         let mut symlink_roots = VecDeque::new();
-        scan_glob_root(
-            &root,
+        scan_glob_roots(
+            std::slice::from_ref(&root),
             follow_root,
             &ripgrep_globs,
             &indices,
@@ -585,9 +587,12 @@ fn expand_globs(patterns: &[&str], cwd: &Path) -> Result<Vec<BTreeSet<PathBuf>>,
             &mut symlink_roots,
             &mut visited_targets,
         )?;
-        while let Some(symlink_root) = symlink_roots.pop_front() {
-            scan_glob_root(
-                &symlink_root,
+        while !symlink_roots.is_empty() {
+            let batch = (0..SYMLINK_SCAN_BATCH_SIZE)
+                .filter_map(|_| symlink_roots.pop_front())
+                .collect::<Vec<_>>();
+            scan_glob_roots(
+                &batch,
                 true,
                 &[],
                 &indices,
@@ -603,9 +608,9 @@ fn expand_globs(patterns: &[&str], cwd: &Path) -> Result<Vec<BTreeSet<PathBuf>>,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn scan_glob_root(
-    root: &Path,
-    follow_root: bool,
+fn scan_glob_roots(
+    roots: &[PathBuf],
+    follow_roots: bool,
     ripgrep_globs: &[String],
     indices: &[usize],
     regexes: &[Regex],
@@ -622,11 +627,13 @@ fn scan_glob_root(
         ));
     }
     let mut command = Command::new(program);
-    if follow_root {
+    if follow_roots {
         command.arg("-H");
     }
-    command.arg(root).args(["!", "-type", "f", "-print0"]);
-    scan_command_paths("find", command, root, &[], |path| {
+    command
+        .args(roots)
+        .args(["!", "-type", "f", "-print0"]);
+    scan_command_paths("find", command, roots, &[], |path| {
         record_glob_matches(&path, indices, regexes, patterns, matches)?;
         match path.symlink_metadata() {
             Ok(metadata) if metadata.file_type().is_symlink() => {}
@@ -660,7 +667,7 @@ fn scan_glob_root(
         }
         Ok(())
     })?;
-    scan_ripgrep_files(root, ripgrep_globs, |path| {
+    scan_ripgrep_files(roots, ripgrep_globs, |path| {
         record_glob_matches(&path, indices, regexes, patterns, matches)
     })
 }
@@ -724,7 +731,7 @@ fn fixed_program(configured: &str, name: &str) -> PathBuf {
 }
 
 fn scan_ripgrep_files(
-    root: &Path,
+    roots: &[PathBuf],
     globs: &[String],
     callback: impl FnMut(PathBuf) -> Result<(), String>,
 ) -> Result<(), String> {
@@ -746,18 +753,20 @@ fn scan_ripgrep_files(
     for glob in globs {
         command.args(["--glob", glob]);
     }
-    command.arg("--").arg(root);
-    scan_command_paths("ripgrep", command, root, &[1], callback)
+    command.arg("--").args(roots);
+    scan_command_paths("ripgrep", command, roots, &[1], callback)
 }
 
 fn scan_command_paths(
     label: &str,
     mut command: Command,
-    root: &Path,
+    roots: &[PathBuf],
     accepted_exit_codes: &[i32],
     mut callback: impl FnMut(PathBuf) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut child = command
+        .env_clear()
+        .env("LC_ALL", "C")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -809,10 +818,18 @@ fn scan_command_paths(
                     break 'scan Err(format!("fixed {label} returned an empty path"));
                 }
                 let raw = PathBuf::from(OsString::from_vec(std::mem::take(&mut pending)));
-                let path = if raw.is_absolute() { raw } else { root.join(raw) };
-                if !path.starts_with(root) {
+                let path = if raw.is_absolute() {
+                    raw
+                } else if let [root] = roots {
+                    root.join(raw)
+                } else {
                     break 'scan Err(format!(
-                        "fixed {label} path escaped scan root: {}",
+                        "fixed {label} returned a relative path for multiple roots"
+                    ));
+                };
+                if !roots.iter().any(|root| path.starts_with(root)) {
+                    break 'scan Err(format!(
+                        "fixed {label} path escaped scan roots: {}",
                         path.display()
                     ));
                 }
@@ -1478,6 +1495,32 @@ mod tests {
         assert!(!matches[0].contains(&key));
         assert!(matches[1].contains(&key));
         assert!(!matches[1].contains(&environment));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn fixed_ripgrep_accepts_multiple_absolute_roots() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-linux-ripgrep-roots-test-{}",
+            std::process::id()
+        ));
+        let first = root.join("first");
+        let second = root.join("second");
+        fs::create_dir_all(&first).expect("first fixture");
+        fs::create_dir_all(&second).expect("second fixture");
+        let first_file = first.join("first.txt");
+        let second_file = second.join("second.txt");
+        fs::write(&first_file, "first").expect("first file");
+        fs::write(&second_file, "second").expect("second file");
+        let mut paths = BTreeSet::new();
+
+        scan_ripgrep_files(&[first, second], &[], |path| {
+            paths.insert(path);
+            Ok(())
+        })
+        .expect("multiple ripgrep roots");
+        assert!(paths.contains(&first_file));
+        assert!(paths.contains(&second_file));
         fs::remove_dir_all(root).expect("cleanup");
     }
 
