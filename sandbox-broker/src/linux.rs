@@ -14,9 +14,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
+use std::ffi::OsString;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, AsRawFd};
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -25,6 +27,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use nix::fcntl::{FcntlArg, FdFlag, fcntl};
+use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use regex_lite::{Regex, escape};
 
 use crate::protocol::{Access, DeniedAccess, DenyScope, PathScope};
@@ -37,11 +40,17 @@ pub const BWRAP: &str = match option_env!("PI_BWRAP_PATH") {
     None => "/usr/bin/bwrap",
 };
 
+const RIPGREP: &str = match option_env!("PI_RG_PATH") {
+    Some(path) => path,
+    None => "/usr/bin/rg",
+};
+
 const MAX_SCAN_DIRECTORIES: usize = 200_000;
 const MAX_PROTECTED_PATHS: usize = 8_192;
 const MAX_GLOB_MATCHES: usize = 8_192;
 const MAX_SCAN_DEPTH: usize = 64;
 const MAX_SCAN_DURATION: Duration = Duration::from_secs(30);
+const MAX_SCAN_PATH_BYTES: usize = 16 * 1_024;
 const SCAN_DEADLINE_CHECK_INTERVAL: usize = 1_024;
 const PROTECTED_METADATA_NAMES: [&str; 2] = [".git", ".pi"];
 const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
@@ -344,9 +353,10 @@ fn protected_workspace_paths(
         cwd,
         0,
         false,
+        false,
         &mut budget,
         &mut visited_directories,
-        &mut |path, file_type| {
+        &mut |path, file_type, _below_symlink| {
             if path
                 .file_name()
                 .is_some_and(|name| PROTECTED_METADATA_NAMES.iter().any(|item| name == *item))
@@ -543,48 +553,219 @@ fn expand_globs(patterns: &[&str], cwd: &Path) -> Result<Vec<BTreeSet<PathBuf>>,
             Regex::new(&glob_regex(pattern)?).map_err(|error| error.to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let mut roots = BTreeSet::new();
-    for pattern in patterns {
-        roots.extend(glob_scan_roots(pattern, cwd)?);
+    let mut patterns_by_root = BTreeMap::<PathBuf, Vec<usize>>::new();
+    for (index, pattern) in patterns.iter().enumerate() {
+        for root in glob_scan_roots(pattern, cwd)? {
+            patterns_by_root.entry(root).or_default().push(index);
+        }
     }
+
     let mut matches = vec![BTreeSet::new(); patterns.len()];
     let mut budget = ScanBudget::new();
-    for root in roots {
+    for (root, indices) in patterns_by_root {
         if !root.is_dir() {
             continue;
         }
+        // Ripgrep emits files. Keep one bounded directory walk for matching
+        // directories, sockets, and symlinks so the previous deny semantics do
+        // not weaken, while ordinary files avoid per-entry Rust regex work.
         let mut visited_directories = BTreeSet::new();
         walk(
             &root,
             0,
             true,
+            false,
             &mut budget,
             &mut visited_directories,
-            &mut |path, file_type| {
+            &mut |path, file_type, below_symlink| {
                 if immutable_store_directory_symlink(path, file_type) {
                     return Ok(Walk::Skip);
                 }
-                let path_text = path.to_string_lossy();
-                for (index, regex) in regexes.iter().enumerate() {
-                    if !regex.is_match(&path_text) {
-                        continue;
-                    }
-                    matches[index].insert(path.to_path_buf());
-                    if let Ok(canonical) = path.canonicalize() {
-                        matches[index].insert(canonical);
-                    }
-                    if matches[index].len() > MAX_GLOB_MATCHES {
-                        return Err(format!(
-                            "deny glob matched more than {MAX_GLOB_MATCHES} paths: {}",
-                            patterns[index]
-                        ));
-                    }
+                if below_symlink || !file_type.is_file() {
+                    record_glob_matches(path, &indices, &regexes, patterns, &mut matches)?;
                 }
                 Ok(Walk::Continue)
             },
         )?;
+
+        let ripgrep_globs = indices
+            .iter()
+            .map(|index| ripgrep_glob(patterns[*index], &root, cwd))
+            .collect::<Result<Vec<_>, _>>()?;
+        scan_ripgrep_files(&root, &ripgrep_globs, |path| {
+            record_glob_matches(&path, &indices, &regexes, patterns, &mut matches)
+        })?;
     }
     Ok(matches)
+}
+
+fn record_glob_matches(
+    path: &Path,
+    indices: &[usize],
+    regexes: &[Regex],
+    patterns: &[&str],
+    matches: &mut [BTreeSet<PathBuf>],
+) -> Result<(), String> {
+    let path_text = path.to_string_lossy();
+    for index in indices.iter().copied() {
+        if !regexes[index].is_match(&path_text) {
+            continue;
+        }
+        matches[index].insert(path.to_path_buf());
+        if let Ok(canonical) = path.canonicalize() {
+            matches[index].insert(canonical);
+        }
+        if matches[index].len() > MAX_GLOB_MATCHES {
+            return Err(format!(
+                "deny glob matched more than {MAX_GLOB_MATCHES} paths: {}",
+                patterns[index]
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn ripgrep_glob(pattern: &str, root: &Path, cwd: &Path) -> Result<String, String> {
+    let root_text = root.to_string_lossy();
+    let prefix = if root == Path::new("/") {
+        "/".to_owned()
+    } else {
+        format!("{root_text}/")
+    };
+    if let Some(relative) = pattern.strip_prefix(&prefix) {
+        return Ok(relative.to_owned());
+    }
+    if root == cwd {
+        return Ok(pattern.trim_start_matches('/').to_owned());
+    }
+    Err(format!(
+        "deny glob is outside its ripgrep scan root: {pattern}"
+    ))
+}
+
+fn ripgrep_program() -> PathBuf {
+    #[cfg(test)]
+    if RIPGREP == "/usr/bin/rg" && !Path::new(RIPGREP).is_file() {
+        for directory in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
+            let candidate = directory.join("rg");
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+    PathBuf::from(RIPGREP)
+}
+
+fn scan_ripgrep_files(
+    root: &Path,
+    globs: &[String],
+    mut callback: impl FnMut(PathBuf) -> Result<(), String>,
+) -> Result<(), String> {
+    let program = ripgrep_program();
+    if !program.is_file() {
+        return Err(format!(
+            "fixed ripgrep path is unavailable: {}",
+            program.display()
+        ));
+    }
+    let mut command = Command::new(&program);
+    command.args([
+        "--files",
+        "--hidden",
+        "--no-ignore",
+        "--null",
+        "--no-messages",
+    ]);
+    for glob in globs {
+        command.args(["--glob", glob]);
+    }
+    let mut child = command
+        .arg("--")
+        .arg(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("cannot start fixed ripgrep: {error}"))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or("fixed ripgrep stdout is unavailable")?;
+    let deadline = Instant::now() + MAX_SCAN_DURATION;
+    let mut buffer = [0_u8; 16 * 1_024];
+    let mut pending = Vec::new();
+    let scan_result = 'scan: loop {
+        if Instant::now() > deadline {
+            break 'scan Err(format!(
+                "ripgrep policy scan exceeds {} seconds",
+                MAX_SCAN_DURATION.as_secs()
+            ));
+        }
+        let ready = {
+            let mut descriptors = [PollFd::new(
+                stdout.as_fd(),
+                PollFlags::POLLIN | PollFlags::POLLHUP | PollFlags::POLLERR,
+            )];
+            if let Err(error) = poll(&mut descriptors, PollTimeout::from(50_u16)) {
+                break 'scan Err(format!("cannot poll fixed ripgrep: {error}"));
+            }
+            descriptors[0].revents().unwrap_or_else(PollFlags::empty)
+        };
+        if !ready.intersects(PollFlags::POLLIN | PollFlags::POLLHUP | PollFlags::POLLERR) {
+            continue;
+        }
+        let read = match stdout.read(&mut buffer) {
+            Ok(read) => read,
+            Err(error) => {
+                break 'scan Err(format!("cannot read fixed ripgrep output: {error}"));
+            }
+        };
+        if read == 0 {
+            break 'scan if pending.is_empty() {
+                Ok(())
+            } else {
+                Err("fixed ripgrep returned an unterminated path".to_owned())
+            };
+        }
+        for byte in &buffer[..read] {
+            if *byte == 0 {
+                if pending.is_empty() {
+                    break 'scan Err("fixed ripgrep returned an empty path".to_owned());
+                }
+                let raw = PathBuf::from(OsString::from_vec(std::mem::take(&mut pending)));
+                let path = if raw.is_absolute() { raw } else { root.join(raw) };
+                if !path.starts_with(root) {
+                    break 'scan Err(format!(
+                        "fixed ripgrep path escaped scan root: {}",
+                        path.display()
+                    ));
+                }
+                if let Err(error) = callback(path) {
+                    break 'scan Err(error);
+                }
+            } else {
+                pending.push(*byte);
+                if pending.len() > MAX_SCAN_PATH_BYTES {
+                    break 'scan Err(format!(
+                        "fixed ripgrep returned a path longer than {MAX_SCAN_PATH_BYTES} bytes"
+                    ));
+                }
+            }
+        }
+    };
+    if scan_result.is_err() {
+        let _ = child.kill();
+    }
+    drop(stdout);
+    let status = child
+        .wait()
+        .map_err(|error| format!("cannot wait for fixed ripgrep: {error}"))?;
+    scan_result?;
+    if status.success() || status.code() == Some(1) {
+        Ok(())
+    } else {
+        Err(format!("fixed ripgrep exited unsuccessfully: {status}"))
+    }
 }
 
 #[cfg(test)]
@@ -697,9 +878,10 @@ fn walk(
     directory: &Path,
     depth: usize,
     follow_symlink_directories: bool,
+    below_symlink: bool,
     budget: &mut ScanBudget,
     visited_directories: &mut BTreeSet<(u64, u64)>,
-    callback: &mut impl FnMut(&Path, &fs::FileType) -> Result<Walk, String>,
+    callback: &mut impl FnMut(&Path, &fs::FileType, bool) -> Result<Walk, String>,
 ) -> Result<(), String> {
     if depth > MAX_SCAN_DEPTH {
         return Err(format!(
@@ -726,16 +908,17 @@ fn walk(
         let file_type = entry
             .file_type()
             .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
-        let action = callback(&path, &file_type)?;
-        let directory = file_type.is_dir()
-            || (follow_symlink_directories
-                && file_type.is_symlink()
-                && fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir()));
+        let action = callback(&path, &file_type, below_symlink)?;
+        let symlink_directory = follow_symlink_directories
+            && file_type.is_symlink()
+            && fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir());
+        let directory = file_type.is_dir() || symlink_directory;
         if directory && matches!(action, Walk::Continue) {
             walk(
                 &path,
                 depth + 1,
                 follow_symlink_directories,
+                below_symlink || symlink_directory,
                 budget,
                 visited_directories,
                 callback,
@@ -1324,9 +1507,10 @@ mod tests {
             &root,
             0,
             false,
+            false,
             &mut budget,
             &mut visited_directories,
-            &mut |_path, file_type| {
+            &mut |_path, file_type, _below_symlink| {
                 if file_type.is_file() {
                     visited_files += 1;
                 }
@@ -1343,9 +1527,10 @@ mod tests {
             &root,
             0,
             false,
+            false,
             &mut budget,
             &mut visited_directories,
-            &mut |_path, _file_type| Ok(Walk::Continue),
+            &mut |_path, _file_type, _below_symlink| Ok(Walk::Continue),
         )
         .expect_err("nested directory must consume the directory budget");
         assert!(error.contains("exceeds 1 directories"));
