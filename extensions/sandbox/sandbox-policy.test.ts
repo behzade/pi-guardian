@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { buildBrokerExecRequest } from "./broker-policy.ts";
+import { buildSandboxExecRequest } from "./sandbox-policy.ts";
 import { DEFAULT_CONFIG } from "./sandbox-config.ts";
 import {
 	developmentCacheRoot,
@@ -12,10 +12,10 @@ import {
 import { canonicalize } from "./io-permissions.ts";
 
 test("maps current base rights and command-local folder grants", () => {
-	const cwd = mkdtempSync(join(tmpdir(), "pi-broker-policy-"));
+	const cwd = mkdtempSync(join(tmpdir(), "pi-sandbox-policy-"));
 	const canonicalCwd = canonicalize(cwd);
 	const state = join(homedir(), ".local", "share", `issues-fixture-${process.pid}`);
-	const request = buildBrokerExecRequest(
+	const request = buildSandboxExecRequest(
 		"one",
 		"issues search view=issue number=79",
 		cwd,
@@ -93,7 +93,7 @@ test("maps current base rights and command-local folder grants", () => {
 
 test("native cache rights overlapping the workspace are omitted", () => {
 	const cwd = canonicalize(homedir());
-	const request = buildBrokerExecRequest(
+	const request = buildSandboxExecRequest(
 		"home-workspace",
 		"true",
 		cwd,
@@ -111,14 +111,14 @@ test("native cache rights overlapping the workspace are omitted", () => {
 });
 
 test("native policy honors a configured development cache root", () => {
-	const cwd = mkdtempSync(join(tmpdir(), "pi-broker-policy-custom-"));
+	const cwd = mkdtempSync(join(tmpdir(), "pi-sandbox-policy-custom-"));
 	const config = {
 		...DEFAULT_CONFIG,
-		developmentCache: { root: ".cache/pi-broker-custom" },
+		developmentCache: { root: ".cache/pi-sandbox-custom" },
 	};
 	ensureDevelopmentCacheDirectories(config.developmentCache);
 	const customRoot = canonicalize(developmentCacheRoot(config.developmentCache));
-	const request = buildBrokerExecRequest(
+	const request = buildSandboxExecRequest(
 		"custom-cache",
 		"true",
 		cwd,
@@ -145,8 +145,8 @@ test("native policy honors a configured development cache root", () => {
 });
 
 test("legacy :root read setting is ignored for nono", () => {
-	const cwd = mkdtempSync(join(tmpdir(), "pi-broker-policy-"));
-	const request = buildBrokerExecRequest(
+	const cwd = mkdtempSync(join(tmpdir(), "pi-sandbox-policy-"));
+	const request = buildSandboxExecRequest(
 		"one",
 		"true",
 		cwd,
@@ -165,9 +165,9 @@ test("legacy :root read setting is ignored for nono", () => {
 });
 
 test("missing configured read roots are omitted instead of becoming create rights", () => {
-	const cwd = mkdtempSync(join(tmpdir(), "pi-broker-policy-"));
+	const cwd = mkdtempSync(join(tmpdir(), "pi-sandbox-policy-"));
 	const missing = join(cwd, "not-created");
-	const request = buildBrokerExecRequest(
+	const request = buildSandboxExecRequest(
 		"one",
 		"true",
 		cwd,
@@ -186,11 +186,11 @@ test("missing configured read roots are omitted instead of becoming create right
 });
 
 test("native deny globs reject dot segments before reaching Rust", () => {
-	const cwd = mkdtempSync(join(tmpdir(), "pi-broker-policy-"));
+	const cwd = mkdtempSync(join(tmpdir(), "pi-sandbox-policy-"));
 	for (const denyWrite of ["dir/../*.secret", "./*.secret", "/tmp/../*.secret"]) {
 		assert.throws(
 			() =>
-				buildBrokerExecRequest(
+				buildSandboxExecRequest(
 					"one",
 					"true",
 					cwd,
@@ -208,8 +208,8 @@ test("native deny globs reject dot segments before reaching Rust", () => {
 });
 
 test("nono policy maps approved hosts and local network", () => {
-	const cwd = mkdtempSync(join(tmpdir(), "pi-broker-policy-"));
-	const proxied = buildBrokerExecRequest(
+	const cwd = mkdtempSync(join(tmpdir(), "pi-sandbox-policy-"));
+	const proxied = buildSandboxExecRequest(
 		"one",
 		"true",
 		cwd,
@@ -226,7 +226,7 @@ test("nono policy maps approved hosts and local network", () => {
 		allow_local_binding: false,
 		allowed_hosts: ["example.com"],
 	});
-	const local = buildBrokerExecRequest(
+	const local = buildSandboxExecRequest(
 		"local",
 		"true",
 		cwd,
@@ -238,7 +238,7 @@ test("nono policy maps approved hosts and local network", () => {
 		true,
 	);
 	assert.deepEqual(local.policy.network, { mode: "loopback" });
-	const localAndProxy = buildBrokerExecRequest(
+	const localAndProxy = buildSandboxExecRequest(
 		"local-and-proxy",
 		"true",
 		cwd,
@@ -256,7 +256,7 @@ test("nono policy maps approved hosts and local network", () => {
 		allow_local_binding: true,
 		allowed_hosts: ["example.com"],
 	});
-	const request = buildBrokerExecRequest(
+	const request = buildSandboxExecRequest(
 		"one",
 		"true",
 		cwd,
@@ -273,10 +273,10 @@ test("nono policy maps approved hosts and local network", () => {
 });
 
 test("nono policy rejects broad and relative Unix socket access", () => {
-	const cwd = mkdtempSync(join(tmpdir(), "pi-broker-policy-"));
+	const cwd = mkdtempSync(join(tmpdir(), "pi-sandbox-policy-"));
 	assert.throws(
 		() =>
-			buildBrokerExecRequest(
+			buildSandboxExecRequest(
 				"one",
 				"true",
 				cwd,
@@ -292,7 +292,7 @@ test("nono policy rejects broad and relative Unix socket access", () => {
 	);
 	assert.throws(
 		() =>
-			buildBrokerExecRequest(
+			buildSandboxExecRequest(
 				"one",
 				"true",
 				cwd,

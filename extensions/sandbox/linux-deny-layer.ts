@@ -9,14 +9,14 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type {
-	BrokerExecRequest,
-	BrokerFilesystemDeny,
-} from "./broker-client.ts";
+	SandboxExecRequest,
+	SandboxFilesystemDeny,
+} from "./sandbox-protocol.ts";
 
 const MAX_GLOB_MATCHES = 8_192;
 
 interface ConcreteDeny {
-	access: BrokerFilesystemDeny["access"];
+	access: SandboxFilesystemDeny["access"];
 	path: string;
 	directory: boolean;
 }
@@ -34,7 +34,7 @@ export function buildLinuxDenyLaunch(
 	bwrapPath: string,
 	nonoPath: string,
 	nonoArgs: readonly string[],
-	request: BrokerExecRequest,
+	request: SandboxExecRequest,
 	privateDirectory: string,
 ): LinuxDenyLaunch {
 	const denies = concreteDenies(request.policy.denies);
@@ -84,12 +84,12 @@ export function buildLinuxDenyLaunch(
 }
 
 export function concreteLinuxDeniesForTest(
-	denies: readonly BrokerFilesystemDeny[],
+	denies: readonly SandboxFilesystemDeny[],
 ): Array<{ access: string; path: string; directory: boolean }> {
 	return concreteDenies(denies);
 }
 
-function concreteDenies(denies: readonly BrokerFilesystemDeny[]): ConcreteDeny[] {
+function concreteDenies(denies: readonly SandboxFilesystemDeny[]): ConcreteDeny[] {
 	const merged = new Map<string, ConcreteDeny>();
 	for (const deny of denies) {
 		const paths = deny.scope === "glob" ? expandGlob(deny.pattern) : [deny.pattern];
@@ -162,9 +162,9 @@ function globRegex(pattern: string): RegExp {
 }
 
 function mergeAccess(
-	left: BrokerFilesystemDeny["access"],
-	right: BrokerFilesystemDeny["access"],
-): BrokerFilesystemDeny["access"] {
+	left: SandboxFilesystemDeny["access"],
+	right: SandboxFilesystemDeny["access"],
+): SandboxFilesystemDeny["access"] {
 	return left === right ? left : "read_write";
 }
 

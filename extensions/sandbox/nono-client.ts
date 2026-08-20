@@ -14,10 +14,10 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Effect, Schema } from "effect";
 import type {
-	BrokerExecRequest,
-	BrokerExecResult,
-	BrokerFilesystemRight,
-} from "./broker-client.ts";
+	SandboxExecRequest,
+	SandboxExecResult,
+	SandboxFilesystemRight,
+} from "./sandbox-protocol.ts";
 import { buildLinuxDenyLaunch } from "./linux-deny-layer.ts";
 
 const READY_TIMEOUT_MS = 10_000;
@@ -65,21 +65,21 @@ export class NonoClient {
 	}
 
 	readonly execEffect = (
-		request: BrokerExecRequest,
+		request: SandboxExecRequest,
 		onData: (data: Buffer) => void,
 		onStarted?: (pid: number) => void,
-	): Effect.Effect<BrokerExecResult, NonoClientError> =>
+	): Effect.Effect<SandboxExecResult, NonoClientError> =>
 		Effect.tryPromise({
 			try: (signal) => this.exec(request, onData, signal, onStarted),
 			catch: nonoError,
 		});
 
 	exec(
-		request: BrokerExecRequest,
+		request: SandboxExecRequest,
 		onData: (data: Buffer) => void,
 		signal?: AbortSignal,
 		onStarted?: (pid: number) => void,
-	): Promise<BrokerExecResult> {
+	): Promise<SandboxExecResult> {
 		if (this.#closed) return Promise.reject(new Error("nono sandbox client is closed"));
 		if (this.#pending.has(request.id)) return Promise.reject(new Error(`Duplicate command ID: ${request.id}`));
 		const profileDirectory = mkdtempSync(join(tmpdir(), ".guardian-nono-"));
@@ -197,7 +197,7 @@ export class NonoClient {
 }
 
 export function buildNonoProfile(
-	request: BrokerExecRequest,
+	request: SandboxExecRequest,
 	platform: NodeJS.Platform = process.platform,
 ): Record<string, unknown> {
 	const rights = [...request.policy.base_rights, ...request.policy.grants];
@@ -255,7 +255,7 @@ export function buildNonoProfile(
 }
 
 function rightPaths(
-	rights: readonly BrokerFilesystemRight[],
+	rights: readonly SandboxFilesystemRight[],
 	access: "read" | "write",
 	scope: "file" | "tree",
 ): string[] {
@@ -266,7 +266,7 @@ function rightPaths(
 	)].sort();
 }
 
-function prepareMissingRights(rights: readonly BrokerFilesystemRight[]): void {
+function prepareMissingRights(rights: readonly SandboxFilesystemRight[]): void {
 	for (const right of rights) {
 		if (existsSync(right.path) || right.missing_path === "reject") continue;
 		if (right.missing_path === "create_tree") mkdirSync(right.path, { recursive: true, mode: 0o700 });

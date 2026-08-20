@@ -111,7 +111,7 @@ export default function (pi: ExtensionAPI) {
 	let sandboxState: SandboxState = { kind: "initializing" };
 	let activeProject: ActiveProjectPolicy | undefined;
 	let activeProjectCwd = localCwd;
-	let brokerClient: NonoClient | undefined;
+	let nonoClient: NonoClient | undefined;
 	let backgroundJobs: NativeBackgroundJobs | undefined;
 	let userBashCounter = 0;
 	let sessionGeneration = 0;
@@ -318,10 +318,10 @@ export default function (pi: ExtensionAPI) {
 		async execute(id, params, signal, onUpdate) {
 			if (sandboxState.kind === "disabled") return localBash.execute(id, params, signal, onUpdate);
 			if (sandboxState.kind !== "ready") throw new Error(sandboxState.kind === "failed" ? sandboxState.reason : "Sandbox is still initializing; command blocked");
-			if (!brokerClient) throw new Error("Native sandbox broker is not ready");
+			if (!nonoClient) throw new Error("Nono sandbox is not ready");
 			const projectAtStart = revalidateProject();
 			const operations = createNativeSandboxOps(
-				brokerClient,
+				nonoClient,
 				projectAtStart.config,
 				projectAtStart.filesystem,
 				networkHosts(projectAtStart),
@@ -380,12 +380,12 @@ export default function (pi: ExtensionAPI) {
 	pi.on("user_bash", () => {
 		if (sandboxState.kind === "disabled") return;
 		if (sandboxState.kind === "ready") {
-			if (!brokerClient) return { operations: unavailableBashOps("Native sandbox broker is not ready") };
+			if (!nonoClient) return { operations: unavailableBashOps("Nono sandbox is not ready") };
 			try {
 				const projectAtStart = revalidateProject();
 				return {
 					operations: createNativeSandboxOps(
-						brokerClient,
+						nonoClient,
 						projectAtStart.config,
 						projectAtStart.filesystem,
 						networkHosts(projectAtStart),
@@ -428,7 +428,7 @@ export default function (pi: ExtensionAPI) {
 			const nonoPath = machineConfig.nonoPath ?? PACKAGED_NONO_PATH;
 			const client = await NonoClient.start(nonoPath, PACKAGED_BWRAP_PATH);
 			if (generation !== sessionGeneration) { await client.shutdown(); return; }
-			brokerClient = client;
+			nonoClient = client;
 			backgroundJobs = new NativeBackgroundJobs(nonoPath, PACKAGED_BWRAP_PATH);
 			sandboxState = { kind: "ready", config: activeProject.config, machineConfig };
 			const backendLabel = `nono ${process.platform === "linux" ? "Landlock" : "Seatbelt"}`;
@@ -445,8 +445,8 @@ export default function (pi: ExtensionAPI) {
 		sessionGeneration += 1;
 		if (approvalContext) unregisterApprovalSession(approvalContext);
 		approvalContext = undefined;
-		const client = brokerClient;
-		brokerClient = undefined;
+		const client = nonoClient;
+		nonoClient = undefined;
 		const jobs = backgroundJobs;
 		backgroundJobs = undefined;
 		if (jobs) await jobs.shutdown();

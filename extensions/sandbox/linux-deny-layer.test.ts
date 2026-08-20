@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { BrokerExecRequest, BrokerFilesystemDeny } from "./broker-client.ts";
+import type { SandboxExecRequest, SandboxFilesystemDeny } from "./sandbox-protocol.ts";
 import {
 	buildLinuxDenyLaunch,
 	concreteLinuxDeniesForTest,
@@ -17,7 +17,7 @@ test("expands workspace denies without following or scanning outside the static 
 		writeFileSync(join(root, ".env"), "secret");
 		writeFileSync(join(root, "nested", "service.key"), "secret");
 		writeFileSync(join(root, "nested", "visible.txt"), "ok");
-		const denies: BrokerFilesystemDeny[] = [
+		const denies: SandboxFilesystemDeny[] = [
 			{ access: "read_write", pattern: `${root}/**/.env`, scope: "glob" },
 			{ access: "read_write", pattern: `${root}/**/*.key`, scope: "glob" },
 			{ access: "write", pattern: join(root, ".guardian"), scope: "tree" },
@@ -42,7 +42,7 @@ test("wraps nono with fixed bubblewrap deny mounts", () => {
 			policy: {
 				denies: [{ access: "read_write", pattern: denied, scope: "file" }],
 			},
-		} as BrokerExecRequest;
+		} as SandboxExecRequest;
 		const launch = buildLinuxDenyLaunch(
 			"/fixed/bwrap",
 			"/fixed/nono",

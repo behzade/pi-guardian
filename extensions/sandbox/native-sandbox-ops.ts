@@ -1,26 +1,26 @@
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { Effect, Schema } from "effect";
 import type {
-	BrokerExecRequest,
-	BrokerExecResult,
-} from "./broker-client.ts";
+	SandboxExecRequest,
+	SandboxExecResult,
+} from "./sandbox-protocol.ts";
 import type { NativeSandboxConfig } from "./sandbox-config.ts";
 import {
-	buildBrokerExecRequest,
+	buildSandboxExecRequest,
 	type NativeFilePermission,
-} from "./broker-policy.ts";
+} from "./sandbox-policy.ts";
 import { formatDenialSummary } from "./denial-summary.ts";
 
-export interface NativeBroker {
+export interface SandboxExecutor {
 	exec(
-		request: BrokerExecRequest,
+		request: SandboxExecRequest,
 		onData: (data: Buffer) => void,
 		signal?: AbortSignal,
-	): Promise<BrokerExecResult>;
+	): Promise<SandboxExecResult>;
 	execEffect?: (
-		request: BrokerExecRequest,
+		request: SandboxExecRequest,
 		onData: (data: Buffer) => void,
-	) => Effect.Effect<BrokerExecResult, unknown>;
+	) => Effect.Effect<SandboxExecResult, unknown>;
 }
 
 export class NativeSandboxExecError extends Schema.TaggedError<NativeSandboxExecError>()(
@@ -38,7 +38,7 @@ const sandboxError = (cause: unknown) => new NativeSandboxExecError({
 
 export const executeNativeSandboxCommand = Effect.fn("Sandbox.executeNativeCommand")(
 	function* (params: {
-		client: NativeBroker;
+		client: SandboxExecutor;
 		config: NativeSandboxConfig;
 		permissions: readonly NativeFilePermission[];
 		networkHosts: readonly string[];
@@ -52,7 +52,7 @@ export const executeNativeSandboxCommand = Effect.fn("Sandbox.executeNativeComma
 		timeout?: number;
 	}) {
 		const request = yield* Effect.try({
-			try: () => buildBrokerExecRequest(
+			try: () => buildSandboxExecRequest(
 				params.commandId,
 				params.command,
 				params.cwd,
@@ -81,7 +81,7 @@ export const executeNativeSandboxCommand = Effect.fn("Sandbox.executeNativeComma
 
 /** Executes exactly once. Access changes are separate request_access tool calls. */
 export function createNativeSandboxOps(
-	client: NativeBroker,
+	client: SandboxExecutor,
 	config: NativeSandboxConfig,
 	permissions: readonly NativeFilePermission[],
 	networkHosts: readonly string[],

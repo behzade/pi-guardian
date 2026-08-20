@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
-import type { BrokerDenial } from "./broker-client.ts";
+import type { SandboxDenial } from "./sandbox-protocol.ts";
 
 const MAX_EXAMPLES = 3;
 
@@ -12,7 +12,7 @@ interface DenialGroup {
 }
 
 export function formatDenialSummary(
-	denials: readonly BrokerDenial[],
+	denials: readonly SandboxDenial[],
 	complete: boolean,
 ): string | undefined {
 	const groups = new Map<string, DenialGroup>();

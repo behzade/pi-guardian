@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import test from "node:test";
-import type { BrokerExecRequest } from "./broker-client.ts";
+import type { SandboxExecRequest } from "./sandbox-protocol.ts";
 import { buildNonoProfile } from "./nono-client.ts";
 
-function request(network: BrokerExecRequest["policy"]["network"]): BrokerExecRequest {
+function request(network: SandboxExecRequest["policy"]["network"]): SandboxExecRequest {
 	return {
 		type: "exec",
 		id: "test",

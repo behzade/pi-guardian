@@ -1,7 +1,7 @@
 import { Cause, Deferred, Effect, Exit, Fiber, Schema, Scope } from "effect";
-import type { BrokerExecResult } from "./broker-client.ts";
+import type { SandboxExecResult } from "./sandbox-protocol.ts";
 import { NonoClient } from "./nono-client.ts";
-import { buildBrokerExecRequest, type NativeFilePermission } from "./broker-policy.ts";
+import { buildSandboxExecRequest, type NativeFilePermission } from "./sandbox-policy.ts";
 import { formatDenialSummary } from "./denial-summary.ts";
 import type { NativeSandboxConfig } from "./sandbox-config.ts";
 
@@ -24,7 +24,7 @@ interface NativeJob {
 	output: Buffer;
 	startedAt: Date;
 	pid?: number;
-	result?: BrokerExecResult;
+	result?: SandboxExecResult;
 	error?: string;
 	fiber: Fiber.Fiber<void, never>;
 }
@@ -63,7 +63,7 @@ export class NativeBackgroundJobs {
 			catch: jobError,
 		});
 		const request = yield* Effect.try({
-			try: () => buildBrokerExecRequest(
+			try: () => buildSandboxExecRequest(
 				`background/${options.name}`,
 				options.command,
 				options.cwd,

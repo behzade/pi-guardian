@@ -6,7 +6,7 @@ import {
 } from "./background-jobs.ts";
 import { backgroundKeyBytes } from "./native-background-jobs.ts";
 
-test("background job names stay in the native broker namespace", () => {
+test("background job names stay in the sandbox namespace", () => {
 	assert.equal(isValidBackgroundJobName("pi-server_1.test"), true);
 	assert.equal(isValidBackgroundJobName("server"), false);
 	assert.equal(isValidBackgroundJobName("pi-bad/name"), false);

@@ -2,10 +2,10 @@ import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import type {
-	BrokerExecRequest,
-	BrokerFilesystemDeny,
-	BrokerFilesystemRight,
-} from "./broker-client.ts";
+	SandboxExecRequest,
+	SandboxFilesystemDeny,
+	SandboxFilesystemRight,
+} from "./sandbox-protocol.ts";
 import { developmentCacheWriteRightsForWorkspace } from "./development-caches.ts";
 import {
 	DEFAULT_CONFIG,
@@ -23,7 +23,7 @@ const OUTPUT_LIMIT_BYTES = 10 * 1024 * 1024;
 
 export type NativeFilePermission = IoPermission;
 
-export function buildBrokerExecRequest(
+export function buildSandboxExecRequest(
 	id: string,
 	command: string,
 	cwd: string,
@@ -33,7 +33,7 @@ export function buildBrokerExecRequest(
 	networkHosts: readonly string[],
 	proxy?: { port: number; socketPath: string },
 	allowLocalBinding = false,
-): BrokerExecRequest {
+): SandboxExecRequest {
 	const effective = mergeGlobalConfig(DEFAULT_CONFIG, config);
 	if (proxy !== undefined && networkHosts.length === 0) {
 		throw new Error("Network proxy state requires at least one allowed host");
@@ -56,7 +56,7 @@ export function buildBrokerExecRequest(
 		env: {
 			...buildShellEnvironment(effective),
 			IN_SANDBOX: "1",
-			PI_SANDBOX: "seatbelt-broker",
+			PI_SANDBOX: "nono",
 		},
 		timeout_ms:
 			timeoutSeconds === undefined || timeoutSeconds <= 0
@@ -113,13 +113,13 @@ function unixSocketRoots(config: NativeSandboxConfig): string[] {
 function baseRights(
 	config: NativeSandboxConfig,
 	cwd: string,
-): BrokerFilesystemRight[] {
-	const rights = new Map<string, BrokerFilesystemRight>();
+): SandboxFilesystemRight[] {
+	const rights = new Map<string, SandboxFilesystemRight>();
 	for (const cache of developmentCacheWriteRightsForWorkspace(
 		cwd,
 		config.developmentCache,
 	)) {
-		const right: BrokerFilesystemRight = {
+		const right: SandboxFilesystemRight = {
 			access: "write",
 			path: cache.path,
 			scope: cache.directory ? "tree" : "file",
@@ -146,7 +146,7 @@ function configRight(
 	access: "read" | "write",
 	entry: string,
 	cwd: string,
-): BrokerFilesystemRight | undefined {
+): SandboxFilesystemRight | undefined {
 	let path: string;
 	if (entry === ":root") return undefined;
 	if (entry === "." || entry === ":workspace_roots") path = cwd;
@@ -171,7 +171,7 @@ function configRight(
 	};
 }
 
-function permissionRight(permission: NativeFilePermission): BrokerFilesystemRight {
+function permissionRight(permission: NativeFilePermission): SandboxFilesystemRight {
 	return {
 		access: permission.kind,
 		path: permission.path,
@@ -188,8 +188,8 @@ function denyRules(
 	config: NativeSandboxConfig,
 	cwd: string,
 	permissions: readonly NativeFilePermission[],
-): BrokerFilesystemDeny[] {
-	const rules = new Map<string, BrokerFilesystemDeny>();
+): SandboxFilesystemDeny[] {
+	const rules = new Map<string, SandboxFilesystemDeny>();
 	for (const [access, entries] of [
 		["read" as const, config.filesystem?.denyRead ?? []],
 		["write" as const, config.filesystem?.denyWrite ?? []],
@@ -219,7 +219,7 @@ function denyRules(
 function normalizeDeny(
 	entry: string,
 	cwd: string,
-): Omit<BrokerFilesystemDeny, "access"> {
+): Omit<SandboxFilesystemDeny, "access"> {
 	if (containsGlob(entry)) {
 		assertGlobHasNoDotSegments(entry);
 		let pattern: string;

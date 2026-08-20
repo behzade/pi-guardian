@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { buildBrokerExecRequest } from "./broker-policy.ts";
+import { buildSandboxExecRequest } from "./sandbox-policy.ts";
 import { DEFAULT_CONFIG, mergeGlobalConfig, normalizeConfig } from "./sandbox-config.ts";
 import {
 	activateProjectPolicy,
@@ -78,7 +78,7 @@ test("project .git writes are grants while Guardian and Pi control writes are re
 		version: 1,
 		rights: [{ kind: "filesystem", access: "write", path: ".git", scope: "tree" }],
 	}, cwd, machine);
-	const request = buildBrokerExecRequest("id", "true", cwd, undefined, active.config, active.filesystem, [], undefined);
+	const request = buildSandboxExecRequest("id", "true", cwd, undefined, active.config, active.filesystem, [], undefined);
 	assert.deepEqual(request.policy.grants, [{
 		access: "write",
 		path: join(cwd, ".git"),
@@ -122,7 +122,7 @@ test("machine filesystem and network denies take precedence", () => {
 		version: 1,
 		rights: [{ kind: "filesystem", access: "write", path: ".", scope: "tree" }],
 	}, cwd, hard);
-	const request = buildBrokerExecRequest("hard-deny", "true", cwd, undefined, broad.config, broad.filesystem, [], undefined);
+	const request = buildSandboxExecRequest("hard-deny", "true", cwd, undefined, broad.config, broad.filesystem, [], undefined);
 	assert(request.policy.grants.some((right) => right.path === cwd && right.scope === "tree"));
 	assert(request.policy.denies.some((deny) => deny.pattern === join(cwd, "blocked")));
 });
