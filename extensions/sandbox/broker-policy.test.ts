@@ -144,6 +144,26 @@ test("native policy honors a configured development cache root", () => {
 	);
 });
 
+test("legacy :root read setting is ignored for nono", () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-broker-policy-"));
+	const request = buildBrokerExecRequest(
+		"one",
+		"true",
+		cwd,
+		undefined,
+		{
+			...DEFAULT_CONFIG,
+			filesystem: {
+				...DEFAULT_CONFIG.filesystem,
+				allowRead: [":root"],
+			},
+		},
+		[],
+		[],
+	);
+	assert.equal(request.policy.base_rights.some((right) => right.path === "/"), false);
+});
+
 test("missing configured read roots are omitted instead of becoming create rights", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-broker-policy-"));
 	const missing = join(cwd, "not-created");

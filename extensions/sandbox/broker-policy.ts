@@ -148,8 +148,8 @@ function configRight(
 	cwd: string,
 ): BrokerFilesystemRight | undefined {
 	let path: string;
-	if (entry === ":root") path = "/";
-	else if (entry === "." || entry === ":workspace_roots") path = cwd;
+	if (entry === ":root") return undefined;
+	if (entry === "." || entry === ":workspace_roots") path = cwd;
 	else if (entry === ":tmpdir") path = canonicalize(tmpdir());
 	else if (entry === ":slash_tmp") path = canonicalize("/tmp");
 	else if (entry.startsWith(":")) return undefined;
