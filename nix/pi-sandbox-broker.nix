@@ -1,5 +1,6 @@
 {
   bubblewrap,
+  findutils,
   lib,
   ripgrep,
   rustPlatform,
@@ -14,6 +15,7 @@ rustPlatform.buildRustPackage {
   cargoLock.lockFile = ../sandbox-broker/Cargo.lock;
 
   PI_BWRAP_PATH = lib.optionalString stdenv.hostPlatform.isLinux (lib.getExe bubblewrap);
+  PI_FIND_PATH = lib.optionalString stdenv.hostPlatform.isLinux (lib.getExe' findutils "find");
   PI_RG_PATH = lib.optionalString stdenv.hostPlatform.isLinux (lib.getExe ripgrep);
   PI_CONCEAL_LAUNCHER_PATH = lib.optionalString stdenv.hostPlatform.isDarwin "${placeholder "out"}/libexec/pi-sandbox-conceal-launcher";
   PI_CONCEAL_SHIM_PATH = lib.optionalString stdenv.hostPlatform.isDarwin "${placeholder "out"}/lib/libpi-sandbox-conceal.dylib";

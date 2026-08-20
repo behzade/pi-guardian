@@ -15,10 +15,10 @@ applies hard denies, builds the platform policy, and owns command cleanup.
   broker-owned helper reports protected read probes as missing to compatible
   tools while Seatbelt keeps the deny in force. Cleanup combines a process
   group with a bounded descendant tracker.
-- Linux uses a fixed Bubblewrap binary, a read-only host root, user and PID
-  namespaces, a private `/proc`, `NoNewPrivs`, empty effective and permitted
-  capability sets before user code, and a private network namespace. PID
-  namespaces provide the command lifetime boundary.
+- Linux uses fixed Bubblewrap, ripgrep, and find binaries, a read-only host root,
+  user and PID namespaces, a private `/proc`, `NoNewPrivs`, empty effective and
+  permitted capability sets before user code, and a private network namespace.
+  PID namespaces provide the command lifetime boundary.
 
 Both backends support one foreground command, immutable file and tree rights,
 hard denies, filtered environments, bounded output, timeouts, cancellation,

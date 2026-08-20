@@ -12,7 +12,7 @@
 
 #![cfg(target_os = "linux")]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::ffi::OsString;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -45,13 +45,16 @@ const RIPGREP: &str = match option_env!("PI_RG_PATH") {
     None => "/usr/bin/rg",
 };
 
-const MAX_SCAN_DIRECTORIES: usize = 200_000;
+const FIND: &str = match option_env!("PI_FIND_PATH") {
+    Some(path) => path,
+    None => "/usr/bin/find",
+};
+
 const MAX_PROTECTED_PATHS: usize = 8_192;
 const MAX_GLOB_MATCHES: usize = 8_192;
-const MAX_SCAN_DEPTH: usize = 64;
 const MAX_SCAN_DURATION: Duration = Duration::from_secs(30);
 const MAX_SCAN_PATH_BYTES: usize = 16 * 1_024;
-const SCAN_DEADLINE_CHECK_INTERVAL: usize = 1_024;
+const MAX_SCAN_SYMLINK_ROOTS: usize = 1_024;
 const PROTECTED_METADATA_NAMES: [&str; 2] = [".git", ".pi"];
 const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
 pub const PROXY_LOOPBACK_PORT: u16 = 31_128;
@@ -345,45 +348,39 @@ fn protected_workspace_paths(
     cwd: &Path,
     approved: &BTreeSet<PathBuf>,
 ) -> Result<Vec<PathBuf>, String> {
-    let mut paths = Vec::new();
-    let mut symlink = None;
-    let mut budget = ScanBudget::new();
-    let mut visited_directories = BTreeSet::new();
-    walk(
-        cwd,
-        0,
-        false,
-        false,
-        &mut budget,
-        &mut visited_directories,
-        &mut |path, file_type, _below_symlink| {
-            if path
-                .file_name()
-                .is_some_and(|name| PROTECTED_METADATA_NAMES.iter().any(|item| name == *item))
-            {
-                if file_type.is_symlink() {
-                    symlink = Some(path.to_path_buf());
-                    return Ok(Walk::Skip);
-                }
-                if !approved.iter().any(|root| path.starts_with(root)) {
-                    paths.push(path.to_path_buf());
-                    if paths.len() > MAX_PROTECTED_PATHS {
-                        return Err(format!(
-                            "filesystem policy scan found more than {MAX_PROTECTED_PATHS} protected control paths"
-                        ));
-                    }
-                }
-                return Ok(Walk::Skip);
-            }
-            Ok(Walk::Continue)
-        },
-    )?;
-    if let Some(path) = symlink {
+    let program = fixed_program(FIND, "find");
+    if !program.is_file() {
         return Err(format!(
-            "cannot enforce writable workspace control symlink: {}",
-            path.display()
+            "fixed find path is unavailable: {}",
+            program.display()
         ));
     }
+    let mut command = Command::new(program);
+    command.arg(cwd).args([
+        "(", "-name", ".git", "-o", "-name", ".pi", ")", "-print0", "-prune",
+    ]);
+    let mut paths = Vec::new();
+    scan_command_paths("find", command, cwd, &[], |path| {
+        let file_type = path
+            .symlink_metadata()
+            .map_err(|error| format!("cannot inspect control path {}: {error}", path.display()))?
+            .file_type();
+        if file_type.is_symlink() {
+            return Err(format!(
+                "cannot enforce writable workspace control symlink: {}",
+                path.display()
+            ));
+        }
+        if !approved.iter().any(|root| path.starts_with(root)) {
+            paths.push(path);
+            if paths.len() > MAX_PROTECTED_PATHS {
+                return Err(format!(
+                    "filesystem policy scan found more than {MAX_PROTECTED_PATHS} protected control paths"
+                ));
+            }
+        }
+        Ok(())
+    })?;
     paths.sort();
     paths.dedup();
     Ok(paths)
@@ -561,42 +558,111 @@ fn expand_globs(patterns: &[&str], cwd: &Path) -> Result<Vec<BTreeSet<PathBuf>>,
     }
 
     let mut matches = vec![BTreeSet::new(); patterns.len()];
-    let mut budget = ScanBudget::new();
     for (root, indices) in patterns_by_root {
         if !root.is_dir() {
             continue;
         }
-        // Ripgrep emits files. Keep one bounded directory walk for matching
-        // directories, sockets, and symlinks so the previous deny semantics do
-        // not weaken, while ordinary files avoid per-entry Rust regex work.
-        let mut visited_directories = BTreeSet::new();
-        walk(
-            &root,
-            0,
-            true,
-            false,
-            &mut budget,
-            &mut visited_directories,
-            &mut |path, file_type, below_symlink| {
-                if immutable_store_directory_symlink(path, file_type) {
-                    return Ok(Walk::Skip);
-                }
-                if below_symlink || !file_type.is_file() {
-                    record_glob_matches(path, &indices, &regexes, patterns, &mut matches)?;
-                }
-                Ok(Walk::Continue)
-            },
-        )?;
-
         let ripgrep_globs = indices
             .iter()
             .map(|index| ripgrep_glob(patterns[*index], &root, cwd))
             .collect::<Result<Vec<_>, _>>()?;
-        scan_ripgrep_files(&root, &ripgrep_globs, |path| {
-            record_glob_matches(&path, &indices, &regexes, patterns, &mut matches)
-        })?;
+        let metadata = root
+            .metadata()
+            .map_err(|error| format!("cannot inspect glob root {}: {error}", root.display()))?;
+        let follow_root = root
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.file_type().is_symlink());
+        let mut visited_targets = BTreeSet::from([(metadata.dev(), metadata.ino())]);
+        let mut symlink_roots = VecDeque::new();
+        scan_glob_root(
+            &root,
+            follow_root,
+            &ripgrep_globs,
+            &indices,
+            &regexes,
+            patterns,
+            &mut matches,
+            &mut symlink_roots,
+            &mut visited_targets,
+        )?;
+        while let Some(symlink_root) = symlink_roots.pop_front() {
+            scan_glob_root(
+                &symlink_root,
+                true,
+                &[],
+                &indices,
+                &regexes,
+                patterns,
+                &mut matches,
+                &mut symlink_roots,
+                &mut visited_targets,
+            )?;
+        }
     }
     Ok(matches)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_glob_root(
+    root: &Path,
+    follow_root: bool,
+    ripgrep_globs: &[String],
+    indices: &[usize],
+    regexes: &[Regex],
+    patterns: &[&str],
+    matches: &mut [BTreeSet<PathBuf>],
+    symlink_roots: &mut VecDeque<PathBuf>,
+    visited_targets: &mut BTreeSet<(u64, u64)>,
+) -> Result<(), String> {
+    let program = fixed_program(FIND, "find");
+    if !program.is_file() {
+        return Err(format!(
+            "fixed find path is unavailable: {}",
+            program.display()
+        ));
+    }
+    let mut command = Command::new(program);
+    if follow_root {
+        command.arg("-H");
+    }
+    command.arg(root).args(["!", "-type", "f", "-print0"]);
+    scan_command_paths("find", command, root, &[], |path| {
+        record_glob_matches(&path, indices, regexes, patterns, matches)?;
+        match path.symlink_metadata() {
+            Ok(metadata) if metadata.file_type().is_symlink() => {}
+            Ok(_) => return Ok(()),
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect glob symlink {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+        let Ok(metadata) = path.metadata() else {
+            return Ok(());
+        };
+        if !metadata.is_dir() {
+            return Ok(());
+        }
+        let canonical = path.canonicalize().map_err(|error| {
+            format!("cannot resolve glob symlink {}: {error}", path.display())
+        })?;
+        if canonical.starts_with(Path::new("/nix/store")) {
+            return Ok(());
+        }
+        if visited_targets.insert((metadata.dev(), metadata.ino())) {
+            symlink_roots.push_back(path);
+            if visited_targets.len() > MAX_SCAN_SYMLINK_ROOTS + 1 {
+                return Err(format!(
+                    "filesystem policy scan found more than {MAX_SCAN_SYMLINK_ROOTS} directory symlink targets"
+                ));
+            }
+        }
+        Ok(())
+    })?;
+    scan_ripgrep_files(root, ripgrep_globs, |path| {
+        record_glob_matches(&path, indices, regexes, patterns, matches)
+    })
 }
 
 fn record_glob_matches(
@@ -643,25 +709,26 @@ fn ripgrep_glob(pattern: &str, root: &Path, cwd: &Path) -> Result<String, String
     ))
 }
 
-fn ripgrep_program() -> PathBuf {
+fn fixed_program(configured: &str, name: &str) -> PathBuf {
     #[cfg(test)]
-    if RIPGREP == "/usr/bin/rg" && !Path::new(RIPGREP).is_file() {
+    if !Path::new(configured).is_file() {
         for directory in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
-            let candidate = directory.join("rg");
+            let candidate = directory.join(name);
             if candidate.is_file() {
                 return candidate;
             }
         }
     }
-    PathBuf::from(RIPGREP)
+    let _ = name;
+    PathBuf::from(configured)
 }
 
 fn scan_ripgrep_files(
     root: &Path,
     globs: &[String],
-    mut callback: impl FnMut(PathBuf) -> Result<(), String>,
+    callback: impl FnMut(PathBuf) -> Result<(), String>,
 ) -> Result<(), String> {
-    let program = ripgrep_program();
+    let program = fixed_program(RIPGREP, "rg");
     if !program.is_file() {
         return Err(format!(
             "fixed ripgrep path is unavailable: {}",
@@ -679,25 +746,34 @@ fn scan_ripgrep_files(
     for glob in globs {
         command.args(["--glob", glob]);
     }
+    command.arg("--").arg(root);
+    scan_command_paths("ripgrep", command, root, &[1], callback)
+}
+
+fn scan_command_paths(
+    label: &str,
+    mut command: Command,
+    root: &Path,
+    accepted_exit_codes: &[i32],
+    mut callback: impl FnMut(PathBuf) -> Result<(), String>,
+) -> Result<(), String> {
     let mut child = command
-        .arg("--")
-        .arg(root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|error| format!("cannot start fixed ripgrep: {error}"))?;
+        .map_err(|error| format!("cannot start fixed {label}: {error}"))?;
     let mut stdout = child
         .stdout
         .take()
-        .ok_or("fixed ripgrep stdout is unavailable")?;
+        .ok_or_else(|| format!("fixed {label} stdout is unavailable"))?;
     let deadline = Instant::now() + MAX_SCAN_DURATION;
     let mut buffer = [0_u8; 16 * 1_024];
     let mut pending = Vec::new();
     let scan_result = 'scan: loop {
         if Instant::now() > deadline {
             break 'scan Err(format!(
-                "ripgrep policy scan exceeds {} seconds",
+                "{label} policy scan exceeds {} seconds",
                 MAX_SCAN_DURATION.as_secs()
             ));
         }
@@ -707,7 +783,7 @@ fn scan_ripgrep_files(
                 PollFlags::POLLIN | PollFlags::POLLHUP | PollFlags::POLLERR,
             )];
             if let Err(error) = poll(&mut descriptors, PollTimeout::from(50_u16)) {
-                break 'scan Err(format!("cannot poll fixed ripgrep: {error}"));
+                break 'scan Err(format!("cannot poll fixed {label}: {error}"));
             }
             descriptors[0].revents().unwrap_or_else(PollFlags::empty)
         };
@@ -717,26 +793,26 @@ fn scan_ripgrep_files(
         let read = match stdout.read(&mut buffer) {
             Ok(read) => read,
             Err(error) => {
-                break 'scan Err(format!("cannot read fixed ripgrep output: {error}"));
+                break 'scan Err(format!("cannot read fixed {label} output: {error}"));
             }
         };
         if read == 0 {
             break 'scan if pending.is_empty() {
                 Ok(())
             } else {
-                Err("fixed ripgrep returned an unterminated path".to_owned())
+                Err(format!("fixed {label} returned an unterminated path"))
             };
         }
         for byte in &buffer[..read] {
             if *byte == 0 {
                 if pending.is_empty() {
-                    break 'scan Err("fixed ripgrep returned an empty path".to_owned());
+                    break 'scan Err(format!("fixed {label} returned an empty path"));
                 }
                 let raw = PathBuf::from(OsString::from_vec(std::mem::take(&mut pending)));
                 let path = if raw.is_absolute() { raw } else { root.join(raw) };
                 if !path.starts_with(root) {
                     break 'scan Err(format!(
-                        "fixed ripgrep path escaped scan root: {}",
+                        "fixed {label} path escaped scan root: {}",
                         path.display()
                     ));
                 }
@@ -747,7 +823,7 @@ fn scan_ripgrep_files(
                 pending.push(*byte);
                 if pending.len() > MAX_SCAN_PATH_BYTES {
                     break 'scan Err(format!(
-                        "fixed ripgrep returned a path longer than {MAX_SCAN_PATH_BYTES} bytes"
+                        "fixed {label} returned a path longer than {MAX_SCAN_PATH_BYTES} bytes"
                     ));
                 }
             }
@@ -757,14 +833,28 @@ fn scan_ripgrep_files(
         let _ = child.kill();
     }
     drop(stdout);
-    let status = child
-        .wait()
-        .map_err(|error| format!("cannot wait for fixed ripgrep: {error}"))?;
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("cannot wait for fixed {label}: {error}"))?
+        {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "{label} policy scan exceeds {} seconds",
+                MAX_SCAN_DURATION.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
     scan_result?;
-    if status.success() || status.code() == Some(1) {
+    if status.success() || status.code().is_some_and(|code| accepted_exit_codes.contains(&code)) {
         Ok(())
     } else {
-        Err(format!("fixed ripgrep exited unsuccessfully: {status}"))
+        Err(format!("fixed {label} exited unsuccessfully: {status}"))
     }
 }
 
@@ -775,13 +865,6 @@ fn expand_glob(pattern: &str, cwd: &Path) -> Result<Vec<PathBuf>, String> {
         .unwrap_or_default()
         .into_iter()
         .collect())
-}
-
-fn immutable_store_directory_symlink(path: &Path, file_type: &fs::FileType) -> bool {
-    file_type.is_symlink()
-        && path
-            .canonicalize()
-            .is_ok_and(|target| target.is_dir() && target.starts_with(Path::new("/nix/store")))
 }
 
 fn glob_scan_roots(pattern: &str, cwd: &Path) -> Result<BTreeSet<PathBuf>, String> {
@@ -808,124 +891,6 @@ fn glob_scan_roots(pattern: &str, cwd: &Path) -> Result<BTreeSet<PathBuf>, Strin
     // applies filename-pattern denies to the active workspace; fixed hard
     // denies separately protect SSH, cloud, auth, and control paths in HOME.
     Ok(BTreeSet::from([cwd.to_path_buf()]))
-}
-
-enum Walk {
-    Continue,
-    Skip,
-}
-
-// Ordinary files are streamed rather than treated as retained policy state.
-// Directory count bounds retained traversal state. Periodic deadline checks
-// fail closed during ordinary traversal; one blocking filesystem operation can
-// still overrun the deadline before control returns here.
-struct ScanBudget {
-    deadline: Instant,
-    inspected_entries: usize,
-    visited_directories: usize,
-    max_directories: usize,
-}
-
-impl ScanBudget {
-    fn new() -> Self {
-        Self::with_directory_limit(MAX_SCAN_DIRECTORIES)
-    }
-
-    fn with_directory_limit(max_directories: usize) -> Self {
-        Self {
-            deadline: Instant::now() + MAX_SCAN_DURATION,
-            inspected_entries: 0,
-            visited_directories: 0,
-            max_directories,
-        }
-    }
-
-    fn enter_directory(&mut self) -> Result<(), String> {
-        self.visited_directories += 1;
-        if self.visited_directories > self.max_directories {
-            return Err(format!(
-                "filesystem policy scan exceeds {} directories",
-                self.max_directories
-            ));
-        }
-        self.check_deadline()
-    }
-
-    fn inspect_entry(&mut self) -> Result<(), String> {
-        self.inspected_entries = self.inspected_entries.saturating_add(1);
-        if self
-            .inspected_entries
-            .is_multiple_of(SCAN_DEADLINE_CHECK_INTERVAL)
-        {
-            self.check_deadline()?;
-        }
-        Ok(())
-    }
-
-    fn check_deadline(&self) -> Result<(), String> {
-        if Instant::now() > self.deadline {
-            Err(format!(
-                "filesystem policy scan exceeds {} seconds",
-                MAX_SCAN_DURATION.as_secs()
-            ))
-        } else {
-            Ok(())
-        }
-    }
-}
-
-fn walk(
-    directory: &Path,
-    depth: usize,
-    follow_symlink_directories: bool,
-    below_symlink: bool,
-    budget: &mut ScanBudget,
-    visited_directories: &mut BTreeSet<(u64, u64)>,
-    callback: &mut impl FnMut(&Path, &fs::FileType, bool) -> Result<Walk, String>,
-) -> Result<(), String> {
-    if depth > MAX_SCAN_DEPTH {
-        return Err(format!(
-            "filesystem policy scan exceeds depth {MAX_SCAN_DEPTH}"
-        ));
-    }
-    budget.check_deadline()?;
-    let metadata = fs::metadata(directory).map_err(|error| {
-        format!(
-            "cannot inspect policy root {}: {error}",
-            directory.display()
-        )
-    })?;
-    if !visited_directories.insert((metadata.dev(), metadata.ino())) {
-        return Ok(());
-    }
-    budget.enter_directory()?;
-    let entries = fs::read_dir(directory)
-        .map_err(|error| format!("cannot scan policy root {}: {error}", directory.display()))?;
-    for entry in entries {
-        budget.inspect_entry()?;
-        let entry = entry.map_err(|error| format!("policy scan failed: {error}"))?;
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
-        let action = callback(&path, &file_type, below_symlink)?;
-        let symlink_directory = follow_symlink_directories
-            && file_type.is_symlink()
-            && fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir());
-        let directory = file_type.is_dir() || symlink_directory;
-        if directory && matches!(action, Walk::Continue) {
-            walk(
-                &path,
-                depth + 1,
-                follow_symlink_directories,
-                below_symlink || symlink_directory,
-                budget,
-                visited_directories,
-                callback,
-            )?;
-        }
-    }
-    budget.check_deadline()
 }
 
 fn glob_regex(pattern: &str) -> Result<String, String> {
@@ -1490,67 +1455,6 @@ mod tests {
     }
 
     #[test]
-    fn flat_files_do_not_exhaust_the_directory_scan_budget() {
-        let root = std::env::temp_dir().join(format!(
-            "pi-linux-flat-scan-test-{}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).expect("fixture directory");
-        for index in 0..16 {
-            fs::write(root.join(format!("file-{index}")), "ordinary").expect("flat fixture");
-        }
-
-        let mut budget = ScanBudget::with_directory_limit(1);
-        let mut visited_directories = BTreeSet::new();
-        let mut visited_files = 0;
-        walk(
-            &root,
-            0,
-            false,
-            false,
-            &mut budget,
-            &mut visited_directories,
-            &mut |_path, file_type, _below_symlink| {
-                if file_type.is_file() {
-                    visited_files += 1;
-                }
-                Ok(Walk::Continue)
-            },
-        )
-        .expect("flat files must not consume the directory budget");
-        assert_eq!(visited_files, 16);
-
-        fs::create_dir(root.join("nested")).expect("nested fixture");
-        let mut budget = ScanBudget::with_directory_limit(1);
-        let mut visited_directories = BTreeSet::new();
-        let error = walk(
-            &root,
-            0,
-            false,
-            false,
-            &mut budget,
-            &mut visited_directories,
-            &mut |_path, _file_type, _below_symlink| Ok(Walk::Continue),
-        )
-        .expect_err("nested directory must consume the directory budget");
-        assert!(error.contains("exceeds 1 directories"));
-        fs::remove_dir_all(root).expect("cleanup");
-    }
-
-    #[test]
-    fn expired_scan_budget_fails_closed() {
-        let budget = ScanBudget {
-            deadline: Instant::now()
-                .checked_sub(Duration::from_secs(1))
-                .expect("one second before now is representable"),
-            inspected_entries: 0,
-            visited_directories: 0,
-            max_directories: 1,
-        };
-        assert!(budget.check_deadline().is_err());
-    }
-
-    #[test]
     fn deny_globs_sharing_a_root_preserve_matches_for_each_pattern() {
         let root = std::env::temp_dir().join(format!(
             "pi-linux-combined-glob-test-{}",
@@ -1688,38 +1592,6 @@ mod tests {
             concrete[0].path,
             target.canonicalize().expect("canonical target")
         );
-        fs::remove_dir_all(root).expect("cleanup");
-    }
-
-    #[test]
-    fn nix_store_directory_symlinks_are_immutable_scan_boundaries() {
-        use std::os::unix::fs::symlink;
-
-        let root = std::env::temp_dir().join(format!(
-            "pi-linux-store-symlink-test-{}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).expect("fixture directory");
-        let store_link = root.join("result");
-        symlink("/nix/store", &store_link).expect("store symlink");
-        let file_type = store_link
-            .symlink_metadata()
-            .expect("symlink metadata")
-            .file_type();
-        assert!(immutable_store_directory_symlink(&store_link, &file_type));
-
-        let ordinary_target = root.join("ordinary-target");
-        fs::create_dir(&ordinary_target).expect("ordinary target");
-        let ordinary_link = root.join("ordinary-link");
-        symlink(&ordinary_target, &ordinary_link).expect("ordinary symlink");
-        let ordinary_type = ordinary_link
-            .symlink_metadata()
-            .expect("ordinary metadata")
-            .file_type();
-        assert!(!immutable_store_directory_symlink(
-            &ordinary_link,
-            &ordinary_type
-        ));
         fs::remove_dir_all(root).expect("cleanup");
     }
 
