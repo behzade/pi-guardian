@@ -20,7 +20,7 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use nix::fcntl::{FcntlArg, FdFlag, fcntl};
 use regex_lite::{Regex, escape};
@@ -35,9 +35,12 @@ pub const BWRAP: &str = match option_env!("PI_BWRAP_PATH") {
     None => "/usr/bin/bwrap",
 };
 
-const MAX_SCAN_ENTRIES: usize = 200_000;
+const MAX_SCAN_DIRECTORIES: usize = 200_000;
+const MAX_PROTECTED_PATHS: usize = 8_192;
 const MAX_GLOB_MATCHES: usize = 8_192;
 const MAX_SCAN_DEPTH: usize = 64;
+const MAX_SCAN_DURATION: Duration = Duration::from_secs(30);
+const SCAN_DEADLINE_CHECK_INTERVAL: usize = 1_024;
 const PROTECTED_METADATA_NAMES: [&str; 2] = [".git", ".pi"];
 pub const PROXY_LOOPBACK_PORT: u16 = 31_128;
 const PROXY_LAUNCHER_PATH: &str = "/tmp/.pi-sandbox-network-launcher";
@@ -321,13 +324,13 @@ fn protected_workspace_paths(
 ) -> Result<Vec<PathBuf>, String> {
     let mut paths = Vec::new();
     let mut symlink = None;
-    let mut visited_entries = 0_usize;
+    let mut budget = ScanBudget::new();
     let mut visited_directories = BTreeSet::new();
     walk(
         cwd,
         0,
         false,
-        &mut visited_entries,
+        &mut budget,
         &mut visited_directories,
         &mut |path, file_type| {
             if path
@@ -336,14 +339,19 @@ fn protected_workspace_paths(
             {
                 if file_type.is_symlink() {
                     symlink = Some(path.to_path_buf());
-                    return Walk::Skip;
+                    return Ok(Walk::Skip);
                 }
                 if !approved.iter().any(|root| path.starts_with(root)) {
                     paths.push(path.to_path_buf());
+                    if paths.len() > MAX_PROTECTED_PATHS {
+                        return Err(format!(
+                            "filesystem policy scan found more than {MAX_PROTECTED_PATHS} protected control paths"
+                        ));
+                    }
                 }
-                return Walk::Skip;
+                return Ok(Walk::Skip);
             }
-            Walk::Continue
+            Ok(Walk::Continue)
         },
     )?;
     if let Some(path) = symlink {
@@ -377,43 +385,60 @@ struct ConcreteDeny {
 
 fn concrete_denies(denies: &[NormalizedDeny], cwd: &Path) -> Result<Vec<ConcreteDeny>, String> {
     let mut by_path = BTreeMap::new();
-    for deny in denies {
-        let paths = match deny.scope {
-            DenyScope::File | DenyScope::Tree => {
-                if let Some(path) = &deny.path
-                    && path.exists()
-                {
-                    vec![path.clone()]
-                } else {
-                    Vec::new()
-                }
-            }
-            DenyScope::Glob => expand_glob(&deny.pattern, cwd)?,
-        };
-        for path in paths {
-            if deny.exempt_roots.iter().any(|root| path.starts_with(root)) {
-                continue;
-            }
-            let path = if path
-                .symlink_metadata()
-                .is_ok_and(|metadata| metadata.file_type().is_symlink())
-            {
-                path.canonicalize().map_err(|error| {
-                    format!("cannot resolve deny symlink {}: {error}", path.display())
-                })?
-            } else {
-                path
-            };
-            by_path
-                .entry(path)
-                .and_modify(|access| *access = merge_denied_access(*access, deny.access))
-                .or_insert(deny.access);
+    for deny in denies
+        .iter()
+        .filter(|deny| deny.scope != DenyScope::Glob)
+    {
+        if let Some(path) = &deny.path
+            && path.exists()
+        {
+            insert_concrete_deny(&mut by_path, deny, path.clone())?;
         }
     }
+
+    let glob_denies = denies
+        .iter()
+        .filter(|deny| deny.scope == DenyScope::Glob)
+        .collect::<Vec<_>>();
+    let glob_patterns = glob_denies
+        .iter()
+        .map(|deny| deny.pattern.as_str())
+        .collect::<Vec<_>>();
+    let expanded_globs = expand_globs(&glob_patterns, cwd)?;
+    for (deny, paths) in glob_denies.iter().copied().zip(expanded_globs) {
+        for path in paths {
+            insert_concrete_deny(&mut by_path, deny, path)?;
+        }
+    }
+
     Ok(by_path
         .into_iter()
         .map(|(path, access)| ConcreteDeny { access, path })
         .collect())
+}
+
+fn insert_concrete_deny(
+    by_path: &mut BTreeMap<PathBuf, DeniedAccess>,
+    deny: &NormalizedDeny,
+    path: PathBuf,
+) -> Result<(), String> {
+    if deny.exempt_roots.iter().any(|root| path.starts_with(root)) {
+        return Ok(());
+    }
+    let path = if path
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        path.canonicalize()
+            .map_err(|error| format!("cannot resolve deny symlink {}: {error}", path.display()))?
+    } else {
+        path
+    };
+    by_path
+        .entry(path)
+        .and_modify(|access| *access = merge_denied_access(*access, deny.access))
+        .or_insert(deny.access);
+    Ok(())
 }
 
 fn merge_denied_access(left: DeniedAccess, right: DeniedAccess) -> DeniedAccess {
@@ -497,42 +522,64 @@ fn hidden_file_source() -> Result<File, String> {
     Ok(file)
 }
 
-fn expand_glob(pattern: &str, cwd: &Path) -> Result<Vec<PathBuf>, String> {
-    let regex = Regex::new(&glob_regex(pattern)?).map_err(|error| error.to_string())?;
-    let roots = glob_scan_roots(pattern, cwd)?;
-    let mut matches = BTreeSet::new();
-    let mut visited_entries = 0_usize;
-    let mut visited_directories = BTreeSet::new();
+fn expand_globs(patterns: &[&str], cwd: &Path) -> Result<Vec<BTreeSet<PathBuf>>, String> {
+    let regexes = patterns
+        .iter()
+        .map(|pattern| {
+            Regex::new(&glob_regex(pattern)?).map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut roots = BTreeSet::new();
+    for pattern in patterns {
+        roots.extend(glob_scan_roots(pattern, cwd)?);
+    }
+    let mut matches = vec![BTreeSet::new(); patterns.len()];
+    let mut budget = ScanBudget::new();
     for root in roots {
         if !root.is_dir() {
             continue;
         }
+        let mut visited_directories = BTreeSet::new();
         walk(
             &root,
             0,
             true,
-            &mut visited_entries,
+            &mut budget,
             &mut visited_directories,
             &mut |path, file_type| {
                 if immutable_store_directory_symlink(path, file_type) {
-                    return Walk::Skip;
+                    return Ok(Walk::Skip);
                 }
-                if regex.is_match(&path.to_string_lossy()) {
-                    matches.insert(path.to_path_buf());
+                let path_text = path.to_string_lossy();
+                for (index, regex) in regexes.iter().enumerate() {
+                    if !regex.is_match(&path_text) {
+                        continue;
+                    }
+                    matches[index].insert(path.to_path_buf());
                     if let Ok(canonical) = path.canonicalize() {
-                        matches.insert(canonical);
+                        matches[index].insert(canonical);
+                    }
+                    if matches[index].len() > MAX_GLOB_MATCHES {
+                        return Err(format!(
+                            "deny glob matched more than {MAX_GLOB_MATCHES} paths: {}",
+                            patterns[index]
+                        ));
                     }
                 }
-                Walk::Continue
+                Ok(Walk::Continue)
             },
         )?;
-        if matches.len() > MAX_GLOB_MATCHES {
-            return Err(format!(
-                "deny glob matched more than {MAX_GLOB_MATCHES} paths: {pattern}"
-            ));
-        }
     }
-    Ok(matches.into_iter().collect())
+    Ok(matches)
+}
+
+#[cfg(test)]
+fn expand_glob(pattern: &str, cwd: &Path) -> Result<Vec<PathBuf>, String> {
+    Ok(expand_globs(&[pattern], cwd)?
+        .pop()
+        .unwrap_or_default()
+        .into_iter()
+        .collect())
 }
 
 fn immutable_store_directory_symlink(path: &Path, file_type: &fs::FileType) -> bool {
@@ -573,19 +620,79 @@ enum Walk {
     Skip,
 }
 
+// Ordinary files are streamed rather than treated as retained policy state.
+// Directory count bounds retained traversal state. Periodic deadline checks
+// fail closed during ordinary traversal; one blocking filesystem operation can
+// still overrun the deadline before control returns here.
+struct ScanBudget {
+    deadline: Instant,
+    inspected_entries: usize,
+    visited_directories: usize,
+    max_directories: usize,
+}
+
+impl ScanBudget {
+    fn new() -> Self {
+        Self::with_directory_limit(MAX_SCAN_DIRECTORIES)
+    }
+
+    fn with_directory_limit(max_directories: usize) -> Self {
+        Self {
+            deadline: Instant::now() + MAX_SCAN_DURATION,
+            inspected_entries: 0,
+            visited_directories: 0,
+            max_directories,
+        }
+    }
+
+    fn enter_directory(&mut self) -> Result<(), String> {
+        self.visited_directories += 1;
+        if self.visited_directories > self.max_directories {
+            return Err(format!(
+                "filesystem policy scan exceeds {} directories",
+                self.max_directories
+            ));
+        }
+        self.check_deadline()
+    }
+
+    fn inspect_entry(&mut self) -> Result<(), String> {
+        self.inspected_entries = self.inspected_entries.saturating_add(1);
+        if self
+            .inspected_entries
+            .is_multiple_of(SCAN_DEADLINE_CHECK_INTERVAL)
+        {
+            self.check_deadline()?;
+        }
+        Ok(())
+    }
+
+    fn check_deadline(&self) -> Result<(), String> {
+        if Instant::now() > self.deadline {
+            Err(format!(
+                "filesystem policy scan exceeds {} seconds",
+                MAX_SCAN_DURATION.as_secs()
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 fn walk(
     directory: &Path,
     depth: usize,
     follow_symlink_directories: bool,
-    visited_entries: &mut usize,
+    budget: &mut ScanBudget,
     visited_directories: &mut BTreeSet<PathBuf>,
-    callback: &mut impl FnMut(&Path, &fs::FileType) -> Walk,
+    callback: &mut impl FnMut(&Path, &fs::FileType) -> Result<Walk, String>,
 ) -> Result<(), String> {
     if depth > MAX_SCAN_DEPTH {
         return Err(format!(
             "filesystem policy scan exceeds depth {MAX_SCAN_DEPTH}"
         ));
     }
+    budget.check_deadline()?;
     let canonical = directory.canonicalize().map_err(|error| {
         format!(
             "cannot resolve policy root {}: {error}",
@@ -595,21 +702,17 @@ fn walk(
     if !visited_directories.insert(canonical) {
         return Ok(());
     }
+    budget.enter_directory()?;
     let entries = fs::read_dir(directory)
         .map_err(|error| format!("cannot scan policy root {}: {error}", directory.display()))?;
     for entry in entries {
+        budget.inspect_entry()?;
         let entry = entry.map_err(|error| format!("policy scan failed: {error}"))?;
-        *visited_entries += 1;
-        if *visited_entries > MAX_SCAN_ENTRIES {
-            return Err(format!(
-                "filesystem policy scan exceeds {MAX_SCAN_ENTRIES} entries"
-            ));
-        }
         let path = entry.path();
         let file_type = entry
             .file_type()
             .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
-        let action = callback(&path, &file_type);
+        let action = callback(&path, &file_type)?;
         let directory = file_type.is_dir()
             || (follow_symlink_directories
                 && file_type.is_symlink()
@@ -619,13 +722,13 @@ fn walk(
                 &path,
                 depth + 1,
                 follow_symlink_directories,
-                visited_entries,
+                budget,
                 visited_directories,
                 callback,
             )?;
         }
     }
-    Ok(())
+    budget.check_deadline()
 }
 
 fn glob_regex(pattern: &str) -> Result<String, String> {
@@ -1091,6 +1194,140 @@ mod tests {
         let roots = glob_scan_roots("/**/*.env", cwd).expect("roots");
         assert!(roots.contains(cwd));
         assert!(!roots.contains(Path::new("/")));
+    }
+
+    #[test]
+    fn flat_files_do_not_exhaust_the_directory_scan_budget() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-linux-flat-scan-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("fixture directory");
+        for index in 0..16 {
+            fs::write(root.join(format!("file-{index}")), "ordinary").expect("flat fixture");
+        }
+
+        let mut budget = ScanBudget::with_directory_limit(1);
+        let mut visited_directories = BTreeSet::new();
+        let mut visited_files = 0;
+        walk(
+            &root,
+            0,
+            false,
+            &mut budget,
+            &mut visited_directories,
+            &mut |_path, file_type| {
+                if file_type.is_file() {
+                    visited_files += 1;
+                }
+                Ok(Walk::Continue)
+            },
+        )
+        .expect("flat files must not consume the directory budget");
+        assert_eq!(visited_files, 16);
+
+        fs::create_dir(root.join("nested")).expect("nested fixture");
+        let mut budget = ScanBudget::with_directory_limit(1);
+        let mut visited_directories = BTreeSet::new();
+        let error = walk(
+            &root,
+            0,
+            false,
+            &mut budget,
+            &mut visited_directories,
+            &mut |_path, _file_type| Ok(Walk::Continue),
+        )
+        .expect_err("nested directory must consume the directory budget");
+        assert!(error.contains("exceeds 1 directories"));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn expired_scan_budget_fails_closed() {
+        let budget = ScanBudget {
+            deadline: Instant::now() - Duration::from_secs(1),
+            inspected_entries: 0,
+            visited_directories: 0,
+            max_directories: 1,
+        };
+        assert!(budget.check_deadline().is_err());
+    }
+
+    #[test]
+    fn deny_globs_sharing_a_root_preserve_matches_for_each_pattern() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-linux-combined-glob-test-{}",
+            std::process::id()
+        ));
+        let nested = root.join("nested");
+        fs::create_dir_all(&nested).expect("fixture directory");
+        let environment = nested.join(".env");
+        let key = nested.join("identity.key");
+        fs::write(&environment, "secret").expect("environment fixture");
+        fs::write(&key, "secret").expect("key fixture");
+        let patterns = [
+            format!("{}/**/.env", root.display()),
+            format!("{}/**/*.key", root.display()),
+        ];
+        let pattern_refs = patterns.iter().map(String::as_str).collect::<Vec<_>>();
+
+        let matches = expand_globs(&pattern_refs, &root).expect("combined glob expansion");
+        assert_eq!(matches.len(), 2);
+        assert!(matches[0].contains(&environment));
+        assert!(!matches[0].contains(&key));
+        assert!(matches[1].contains(&key));
+        assert!(!matches[1].contains(&environment));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn alias_specific_globs_scan_each_distinct_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "pi-linux-glob-alias-test-{}",
+            std::process::id()
+        ));
+        let target = root.join("target");
+        fs::create_dir_all(&target).expect("target fixture");
+        let secret = target.join("secret.env");
+        fs::write(&secret, "secret").expect("secret fixture");
+        let first_alias = root.join("first-alias");
+        let second_alias = root.join("second-alias");
+        symlink(&target, &first_alias).expect("first alias");
+        symlink(&target, &second_alias).expect("second alias");
+        let patterns = [
+            format!("{}/**/*.env", first_alias.display()),
+            format!("{}/**/*.env", second_alias.display()),
+        ];
+        let pattern_refs = patterns.iter().map(String::as_str).collect::<Vec<_>>();
+
+        let matches = expand_globs(&pattern_refs, &root).expect("alias glob expansion");
+        assert!(matches[0].contains(&first_alias.join("secret.env")));
+        assert!(matches[0].contains(&secret));
+        assert!(matches[1].contains(&second_alias.join("secret.env")));
+        assert!(matches[1].contains(&secret));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn protected_control_paths_are_found_after_ordinary_files() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-linux-protected-scan-test-{}",
+            std::process::id()
+        ));
+        let repository = root.join("nested-repository");
+        let git = repository.join(".git");
+        fs::create_dir_all(&git).expect("protected fixture");
+        for index in 0..16 {
+            fs::write(root.join(format!("ordinary-{index}")), "ordinary")
+                .expect("ordinary fixture");
+        }
+
+        let protected = protected_workspace_paths(&root, &BTreeSet::new())
+            .expect("protected path scan");
+        assert_eq!(protected, vec![git]);
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
