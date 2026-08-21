@@ -12,6 +12,10 @@
       "access": "write",
       "path": ".git",
       "scope": "tree"
+    },
+    {
+      "kind": "network_host",
+      "host": "registry.npmjs.org"
     }
   ]
 }
