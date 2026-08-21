@@ -5,7 +5,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerSandbox from "./index.ts";
 import { BackgroundJobParams, validateBackgroundJobParams } from "./tool-schemas.ts";
 
-const indexSource = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+const accessRequestSource = readFileSync(new URL("./access-request.ts", import.meta.url), "utf8");
 const schemaSource = readFileSync(new URL("./tool-schemas.ts", import.meta.url), "utf8");
 
 test("background jobs expose a provider-compatible object schema", () => {
@@ -48,8 +48,8 @@ test("request_access owns every durable access request variant", () => {
 	assert.match(schema, /Type\.Literal\("network_endpoint"\)/);
 	assert.match(schema, /minimum: 1, maximum: 65_535/);
 	assert.match(schema, /Type\.Literal\("development_cache"\)/);
-	assert.match(indexSource, /name: "request_access"/);
-	assert.doesNotMatch(indexSource, /name: "request_network_permission"/);
+	assert.match(accessRequestSource, /name: "request_access"/);
+	assert.doesNotMatch(accessRequestSource, /name: "request_network_permission"/);
 });
 
 test("disabled sandbox does not intercept built-in file tools", async () => {

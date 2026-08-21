@@ -6,11 +6,13 @@ import test from "node:test";
 import { buildSandboxExecRequest } from "./sandbox-policy.ts";
 import { DEFAULT_CONFIG, mergeGlobalConfig, normalizeConfig } from "./sandbox-config.ts";
 import {
+	accessPolicyAdditions,
 	activateProjectPolicy,
 	addProjectAccess,
 	addProjectRights,
 	loadProjectPolicy,
 	loadProjectPolicyForUpdate,
+	mergeAccessPolicies,
 	projectPolicyDiff,
 	projectPolicyPath,
 	sameProjectPolicy,
@@ -104,6 +106,14 @@ test("project .git writes are grants while Guardian and Pi control writes are re
 		version: 1,
 		rights: [{ kind: "filesystem", access: "write", path: ".guardian", scope: "tree" }],
 	}, cwd, machine), /cannot grant sandboxed writes to project \.guardian/);
+	assert.throws(() => activateProjectPolicy({
+		version: 1,
+		rights: [{ kind: "filesystem", access: "write", path: "~/.config/guardian", scope: "tree" }],
+	}, cwd, machine), /cannot grant protected or machine-denied write access/);
+	assert.throws(() => activateProjectPolicy({
+		version: 1,
+		rights: [{ kind: "filesystem", access: "read", path: "~/.config/guardian", scope: "tree" }],
+	}, cwd, machine), /cannot grant protected or machine-denied read access/);
 
 	const linked = workspace();
 	const target = workspace();
@@ -220,6 +230,31 @@ test("filesystem grants reject symlinks and are invalid after missing-path symli
 	}], cwd, machine);
 	symlinkSync(target, join(cwd, "later-link"));
 	assert.throws(() => activateProjectPolicy(approved.policy, cwd, machine), /cannot cross an existing symlink/);
+});
+
+test("project and session policies compose without widening or replacing cache mappings", () => {
+	const project: ProjectSandboxPolicy = {
+		version: 1,
+		rights: [{ kind: "network_host", host: "project.example.com" }],
+		developmentCache: { environment: { PROJECT_CACHE: "project" } },
+	};
+	const session: ProjectSandboxPolicy = {
+		version: 1,
+		rights: [{ kind: "network_endpoint", host: "localhost", port: 4321 }],
+		developmentCache: { environment: { SESSION_CACHE: "session" } },
+	};
+	const merged = mergeAccessPolicies(project, session);
+	assert.equal(merged.rights.length, 2);
+	assert.deepEqual(merged.developmentCache?.environment, {
+		PROJECT_CACHE: "project",
+		SESSION_CACHE: "session",
+	});
+	assert.deepEqual(accessPolicyAdditions(project, merged), session);
+	assert.throws(() => mergeAccessPolicies(project, {
+		version: 1,
+		rights: [],
+		developmentCache: { environment: { PROJECT_CACHE: "replacement" } },
+	}), /conflicting development-cache mapping PROJECT_CACHE/);
 });
 
 test("request batches check only net-new sibling files and support cache adapters", () => {

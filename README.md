@@ -21,6 +21,17 @@ is absent. Portable, user-approved project rights are stored in:
 .guardian/sandbox.json
 ```
 
+Rights approved only for one persisted Pi session are stored outside the
+project and bound to both its session ID and exact session file:
+
+```text
+~/.config/guardian/session-rights/<session-id-hash>.json
+```
+
+They survive restart and resume, but are not inherited by new, forked, or
+cloned sessions. Ephemeral Pi sessions keep session rights only in memory.
+The user chooses session or project scope in the approval prompt.
+
 The adapter reads the legacy `.pi/extensions/sandbox/sandbox.json` only when the
 new policy is absent; the next approved update writes `.guardian/sandbox.json`.
 
@@ -31,9 +42,11 @@ Project rights retain the version 1 schema:
 - exact loopback `network_endpoint` host/port rights;
 - managed development-cache environment mappings.
 
-Each agent synchronizes the checked-in project policy before starting a command,
-then gives that command one immutable policy snapshot. Policy changes never
-retry a command automatically.
+Each agent synchronizes the checked-in project policy and its bound session
+policy before starting a command, then gives that command one immutable policy
+snapshot. Policy changes never retry a command automatically. Guardian's
+user-level `~/.config/guardian` control directory cannot be granted to
+sandboxed commands; project-local `.guardian` remains the project policy root.
 
 ## Enforcement
 

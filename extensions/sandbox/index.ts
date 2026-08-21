@@ -4,7 +4,6 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
-import { Effect } from "effect";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -20,10 +19,9 @@ import {
 	isValidBackgroundJobName,
 	modelVisibleBackgroundJobOutput,
 } from "./background-jobs.ts";
-import {
-	developmentCacheRoot,
-	ensureDevelopmentCacheDirectories,
-} from "./development-caches.ts";
+import { developmentCacheRoot } from "./development-caches.ts";
+import { ActiveAccessPolicy } from "./active-access-policy.ts";
+import { registerAccessRequest } from "./access-request.ts";
 import {
 	DEFAULT_CONFIG,
 	type NativeSandboxConfig,
@@ -51,30 +49,20 @@ import { createNativeSandboxOps } from "./native-sandbox-ops.ts";
 import { runtimeNetworkHosts } from "./network-policy.ts";
 import {
 	registerApprovalSession,
-	requestUserApproval,
 	unregisterApprovalSession,
 } from "./approval-transport.ts";
 import { backgroundKeyBytes, NativeBackgroundJobs } from "./native-background-jobs.ts";
 import {
 	BackgroundJobParams,
 	BashParams,
-	RequestAccessParams,
 	validateBackgroundJobParams,
 } from "./tool-schemas.ts";
 import {
-	activateProjectPolicy,
-	addProjectAccess,
-	EMPTY_PROJECT_POLICY,
-	loadProjectPolicy,
-	loadProjectPolicyForUpdate,
-	projectPolicyDiff,
 	projectPolicyPath,
-	sameProjectPolicy,
-	saveProjectPolicy,
 	type ActiveProjectPolicy,
-	type ProjectAccessRequest,
 	type ProjectAccessRight,
 } from "./project-policy.ts";
+import { sessionPolicyPath } from "./session-policy-store.ts";
 
 const PACKAGED_NONO_PATH = "@NONO@/bin/nono";
 const PACKAGED_BWRAP_PATH = "@BWRAP@";
@@ -108,155 +96,35 @@ export default function (pi: ExtensionAPI) {
 	const localCwd = process.cwd();
 	const localBash = createBashTool(localCwd);
 	let sandboxState: SandboxState = { kind: "initializing" };
-	let activeProject: ActiveProjectPolicy | undefined;
-	let activeProjectCwd = localCwd;
+	let accessPolicy: ActiveAccessPolicy | undefined;
 	let nonoClient: NonoClient | undefined;
 	let backgroundJobs: NativeBackgroundJobs | undefined;
 	let userBashCounter = 0;
 	let sessionGeneration = 0;
-	let projectPolicyTrusted = false;
 	let approvalContext: ExtensionContext | undefined;
 
-	const revalidateProject = (
-		project: ActiveProjectPolicy = requireActiveProject(activeProject),
-	): ActiveProjectPolicy => {
-		if (sandboxState.kind !== "ready") throw new Error("Sandbox is not ready");
-		return activateProjectPolicy(
-			project.policy,
-			activeProjectCwd,
-			sandboxState.machineConfig,
-			project.sourceText,
-		);
+	const activeAccess = (): ActiveAccessPolicy => {
+		if (sandboxState.kind !== "ready" || !accessPolicy) throw new Error("Sandbox is not ready");
+		return accessPolicy;
 	};
-	const synchronizeProject = (): ActiveProjectPolicy => {
-		if (sandboxState.kind !== "ready") throw new Error("Sandbox is not ready");
-		if (!projectPolicyTrusted) return revalidateProject();
-		const diskProject = loadProjectPolicyForUpdate(
-			activeProjectCwd,
-			sandboxState.machineConfig,
-		);
-		const policyChanged = !sameProjectPolicy(
-			requireActiveProject(activeProject).policy,
-			diskProject.policy,
-		);
-		activeProject = diskProject;
-		sandboxState = { ...sandboxState, config: diskProject.config };
-		if (policyChanged) {
-			ensureDevelopmentCacheDirectories(diskProject.config.developmentCache);
-		}
-		return diskProject;
+	const setEffectiveConfig = (config: NativeSandboxConfig): void => {
+		sandboxState = { ...requireReadyState(sandboxState), config };
 	};
-	const networkHosts = (project: ActiveProjectPolicy = requireActiveProject(activeProject)) =>
-		runtimeNetworkHosts(project.config, project.networkHosts);
+	const synchronizeAccess = (): ActiveProjectPolicy => {
+		const effective = activeAccess().synchronize();
+		setEffectiveConfig(effective.config);
+		return effective;
+	};
+	const networkHosts = (policy: ActiveProjectPolicy = activeAccess().effective) =>
+		runtimeNetworkHosts(policy.config, policy.networkHosts);
 
-	pi.registerTool({
-		name: "request_access",
-		label: "Request project access",
-		description:
-			"Ask the user to add a batch of portable filesystem, exact network host or loopback endpoint, and/or managed development-cache adapter entries to checked-in .guardian/sandbox.json. This host tool updates policy only; it never runs or retries a command.",
-		promptSnippet:
-			"After a sandbox denial, use request_access for the smallest useful project/home file tree, exact host, exact loopback endpoint, or development_cache environment mapping. If approved, explicitly rerun later.",
-		parameters: RequestAccessParams,
-		executionMode: "sequential",
-		async execute(toolCallId, params, signal, _onUpdate, ctx) {
-			if (sandboxState.kind !== "ready" || !activeProject) {
-				return accessError("The sandbox is not ready, so project policy was not changed.", "sandbox-not-ready");
-			}
-			if (!ctx.isProjectTrusted()) {
-				return accessError("Project access policy can be changed only for a trusted project.", "project-untrusted");
-			}
-			let diskProject: ActiveProjectPolicy;
-			try {
-				diskProject = synchronizeProject();
-			} catch (error) {
-				return accessError(errorMessage(error), "invalid-policy");
-			}
-
-			let candidate: ActiveProjectPolicy;
-			try {
-				candidate = addProjectAccess(
-					diskProject.policy,
-					params.rights as ProjectAccessRequest[],
-					ctx.cwd,
-					sandboxState.machineConfig,
-				);
-			} catch (error) {
-				return accessError(errorMessage(error), "invalid-request");
-			}
-			const candidateMatchesDisk = sameProjectPolicy(candidate.policy, diskProject.policy);
-			if (candidateMatchesDisk) {
-				return {
-					content: [{ type: "text", text: `All requested rights are active in ${projectPolicyPath(ctx.cwd)}. No command was retried.` }],
-					details: { granted: true, existing: true, policyPath: projectPolicyPath(ctx.cwd), commandRetried: false },
-				};
-			}
-			const sourceSnapshot = diskProject.sourceText;
-			const diff = projectPolicyDiff(diskProject.policy, candidate.policy, ctx.cwd);
-			pi.events.emit("approval:requested", {
-				kind: "io-permission",
-				title: "Add rights to project sandbox policy",
-				summary: diff,
-				toolName: "request_access",
-				toolCallId,
-				sessionId: ctx.sessionManager.getSessionId(),
-				cwd: ctx.cwd,
-			});
-			let approvalDecision: "allowed" | "denied" = "denied";
-			const result = await Effect.runPromise(requestUserApproval(ctx, {
-				requestId: toolCallId,
-				title: "Add rights to project sandbox policy",
-				message: `${diff}\n\nReason: ${params.reason}`,
-				source: "tool_call",
-				surface: "project_policy",
-				value: projectPolicyPath(ctx.cwd),
-				choices: [
-					{ id: "add", label: "Add to project policy" },
-					{ id: "deny", label: "Deny" },
-				],
-				signal,
-			}).pipe(
-				Effect.tap((value) => Effect.sync(() => {
-					approvalDecision = value.choiceId === "add" ? "allowed" : "denied";
-				})),
-				Effect.ensuring(Effect.sync(() => pi.events.emit("approval:resolved", {
-					kind: "io-permission",
-					toolName: "request_access",
-					toolCallId,
-					decision: approvalDecision,
-				}))),
-			), { signal });
-			const approved = result.choiceId === "add";
-			if (!approved) {
-				return accessError(result.unavailableReason ?? "Project policy change denied.", "denied");
-			}
-			try {
-				candidate.sourceText = saveProjectPolicy(ctx.cwd, candidate.policy, sourceSnapshot);
-				ensureDevelopmentCacheDirectories(candidate.config.developmentCache);
-				activeProject = candidate;
-				sandboxState = { ...sandboxState, config: candidate.config };
-			} catch (error) {
-				return accessError(`Project policy was not activated: ${errorMessage(error)}`, "save-failed");
-			}
-			return {
-				content: [{
-					type: "text",
-					text: `Updated and activated ${projectPolicyPath(ctx.cwd)}. No command was retried; explicitly rerun it in a later tool call.`,
-				}],
-				details: {
-					granted: true,
-					policyPath: projectPolicyPath(ctx.cwd),
-					requests: params.rights,
-					commandRetried: false,
-				},
-			};
-		},
-	});
+	registerAccessRequest(pi, activeAccess, setEffectiveConfig);
 
 	pi.registerTool({
 		name: "background_job",
 		label: "Background job",
 		description:
-			"Start, list, inspect, interact with, or stop a session-scoped long-running command. New jobs use the active .guardian/sandbox.json policy captured at start; existing jobs keep their start policy.",
+			"Start, list, inspect, interact with, or stop a session-scoped long-running command. New jobs capture the active project and Pi-session rights at start; existing jobs keep their start policy.",
 		promptSnippet:
 			"Use background_job for long-running servers, watchers, builds, and tests. Use request_access separately if policy must change, then start a new job.",
 		parameters: BackgroundJobParams,
@@ -274,16 +142,16 @@ export default function (pi: ExtensionAPI) {
 					const cwd = resolvePermissionPath(validated.cwd ?? ctx.cwd, ctx.cwd);
 					if (!isInside(canonicalize(ctx.cwd), cwd)) throw new Error("Background jobs must start inside the current workspace.");
 					if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`Background job directory does not exist: ${cwd}`);
-					const projectAtStart = synchronizeProject();
+					const policyAtStart = synchronizeAccess();
 					output = await backgroundJobs.start({
 						name: validated.name,
 						command: validated.command,
 						cwd,
-						config: projectAtStart.config,
-						permissions: projectAtStart.filesystem,
-						revalidatePermissions: () => revalidateProject(projectAtStart).filesystem,
-						networkHosts: networkHosts(projectAtStart),
-						localPorts: projectAtStart.localPorts,
+						config: policyAtStart.config,
+						permissions: policyAtStart.filesystem,
+						revalidatePermissions: () => activeAccess().revalidate(policyAtStart).filesystem,
+						networkHosts: networkHosts(policyAtStart),
+						localPorts: policyAtStart.localPorts,
 					}, signal);
 				} else if (validated.action === "list") output = backgroundJobs.list();
 				else if (validated.action === "status") output = backgroundJobs.status(validated.name);
@@ -303,9 +171,9 @@ export default function (pi: ExtensionAPI) {
 		...localBash,
 		label: "bash (OS sandbox)",
 		description:
-			"Execute one bash command with the active checked-in project sandbox policy. The call cannot declare rights and is never automatically retried. Use request_access separately after a denial.",
+			"Execute one bash command with the active project and Pi-session sandbox policy. The call cannot declare rights and is never automatically retried. Use request_access separately after a denial.",
 		promptSnippet:
-			"Run once under the active policy. On denial, inspect the bounded summary, request the smallest durable project right with request_access, and explicitly rerun later. Prefer managed development caches over host cache grants.",
+			"Run once under the active policy. On denial, inspect the bounded summary, request the smallest right, and explicitly rerun later. Prefer managed development caches over host cache grants.",
 		parameters: BashParams,
 		executionMode: "sequential",
 		renderShell: "self",
@@ -313,15 +181,15 @@ export default function (pi: ExtensionAPI) {
 			if (sandboxState.kind === "disabled") return localBash.execute(id, params, signal, onUpdate);
 			if (sandboxState.kind !== "ready") throw new Error(sandboxState.kind === "failed" ? sandboxState.reason : "Sandbox is still initializing; command blocked");
 			if (!nonoClient) throw new Error("Nono sandbox is not ready");
-			const projectAtStart = synchronizeProject();
+			const policyAtStart = synchronizeAccess();
 			const operations = createNativeSandboxOps(
 				nonoClient,
-				projectAtStart.config,
-				projectAtStart.filesystem,
-				networkHosts(projectAtStart),
-				projectAtStart.localPorts,
+				policyAtStart.config,
+				policyAtStart.filesystem,
+				networkHosts(policyAtStart),
+				policyAtStart.localPorts,
 				id,
-				() => revalidateProject(projectAtStart).filesystem,
+				() => activeAccess().revalidate(policyAtStart).filesystem,
 			);
 			return createBashTool(localCwd, { operations }).execute(id, params, signal, onUpdate);
 		},
@@ -340,7 +208,7 @@ export default function (pi: ExtensionAPI) {
 		if (!lexicalPath) return { block: true, reason: "File path is missing" };
 		const path = canonicalize(lexicalPath);
 		const access = event.toolName === "write" || event.toolName === "edit" ? "write" : "read";
-		const synchronizedProject = synchronizeProject();
+		const synchronizedPolicy = synchronizeAccess();
 		const config = activeConfig(sandboxState);
 		if (
 			isProtectedPath(lexicalPath) ||
@@ -356,7 +224,7 @@ export default function (pi: ExtensionAPI) {
 			return { block: true, reason: `Writes to a symlinked control folder cannot be granted: ${gitRoot}` };
 		}
 		const controlRoot = gitRoot;
-		const fileRights = revalidateProject(synchronizedProject).filesystem;
+		const fileRights = activeAccess().revalidate(synchronizedPolicy).filesystem;
 		const allowed = controlRoot
 			? fileRights.some((permission) =>
 				permission.kind === access && permission.directory && lexicalControlKey(permission.path) === lexicalControlKey(controlRoot))
@@ -377,16 +245,16 @@ export default function (pi: ExtensionAPI) {
 		if (sandboxState.kind === "ready") {
 			if (!nonoClient) return { operations: unavailableBashOps("Nono sandbox is not ready") };
 			try {
-				const projectAtStart = synchronizeProject();
+				const policyAtStart = synchronizeAccess();
 				return {
 					operations: createNativeSandboxOps(
 						nonoClient,
-						projectAtStart.config,
-						projectAtStart.filesystem,
-						networkHosts(projectAtStart),
-						projectAtStart.localPorts,
+						policyAtStart.config,
+						policyAtStart.filesystem,
+						networkHosts(policyAtStart),
+						policyAtStart.localPorts,
 						`user-bash-${++userBashCounter}-${randomUUID()}`,
-						() => revalidateProject(projectAtStart).filesystem,
+						() => activeAccess().revalidate(policyAtStart).filesystem,
 					),
 				};
 			} catch (error) {
@@ -413,20 +281,23 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("Sandbox disabled via global config", "warning");
 				return;
 			}
-			activeProjectCwd = ctx.cwd;
-			projectPolicyTrusted = ctx.isProjectTrusted();
-			activeProject = projectPolicyTrusted
-				? loadProjectPolicy(ctx.cwd, machineConfig)
-				: activateProjectPolicy(EMPTY_PROJECT_POLICY, ctx.cwd, machineConfig);
+			const sessionFile = ctx.sessionManager.getSessionFile();
+			accessPolicy = ActiveAccessPolicy.load(
+				ctx.cwd,
+				machineConfig,
+				ctx.isProjectTrusted(),
+				sessionFile
+					? { sessionId: ctx.sessionManager.getSessionId(), sessionFile, cwd: ctx.cwd }
+					: undefined,
+			);
 			sandboxState = { kind: "initializing" };
-			ensureDevelopmentCacheDirectories(activeProject.config.developmentCache);
 			if (process.platform !== "darwin" && process.platform !== "linux") throw new Error("the native sandbox supports macOS and Linux only");
 			const nonoPath = machineConfig.nonoPath ?? PACKAGED_NONO_PATH;
 			const client = await NonoClient.start(nonoPath, PACKAGED_BWRAP_PATH);
 			if (generation !== sessionGeneration) { await client.shutdown(); return; }
 			nonoClient = client;
 			backgroundJobs = new NativeBackgroundJobs(nonoPath, PACKAGED_BWRAP_PATH);
-			sandboxState = { kind: "ready", config: activeProject.config, machineConfig };
+			sandboxState = { kind: "ready", config: accessPolicy.effective.config, machineConfig };
 			const backendLabel = `nono ${process.platform === "linux" ? "Landlock" : "Seatbelt"}`;
 			ctx.ui.setStatus("sandbox", ctx.ui.theme.fg("accent", `🔒 ${backendLabel}`));
 		} catch (error) {
@@ -447,9 +318,7 @@ export default function (pi: ExtensionAPI) {
 		backgroundJobs = undefined;
 		if (jobs) await jobs.shutdown();
 		if (client) await client.shutdown();
-		activeProject = undefined;
-		activeProjectCwd = localCwd;
-		projectPolicyTrusted = false;
+		accessPolicy = undefined;
 		userBashCounter = 0;
 		sandboxState = { kind: "initializing" };
 	});
@@ -462,17 +331,20 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			try {
-				synchronizeProject();
+				synchronizeAccess();
 			} catch (error) {
 				ctx.ui.notify(`Sandbox policy could not be synchronized: ${errorMessage(error)}`, "error");
 				return;
 			}
+			const access = activeAccess();
 			ctx.ui.notify([
 				"OS sandbox (nono):",
 				`  Project policy: ${projectPolicyPath(ctx.cwd)}`,
-				`  Project rights: ${activeProject?.policy.rights.map(rightLabel).join(", ") || "(none)"}`,
+				`  Project rights: ${access.project.policy.rights.map(rightLabel).join(", ") || "(none)"}`,
+				`  Session rights: ${access.session.policy.rights.map(rightLabel).join(", ") || "(none)"}`,
+				`  Session policy: ${access.sessionIdentity ? sessionPolicyPath(access.sessionIdentity) : "ephemeral"}`,
 				`  Network hosts: ${networkHosts().join(", ") || "(blocked)"}`,
-				`  Loopback ports: ${activeProject?.localPorts.join(", ") || "(blocked)"}`,
+				`  Loopback ports: ${access.effective.localPorts.join(", ") || "(blocked)"}`,
 				`  Development cache: ${developmentCacheRoot(sandboxState.config.developmentCache)}`,
 				"  Denials: bounded diagnostics; no automatic retry",
 			].join("\n"), "info");
@@ -480,19 +352,9 @@ export default function (pi: ExtensionAPI) {
 	});
 }
 
-function requireActiveProject(
-	project: ActiveProjectPolicy | undefined,
-): ActiveProjectPolicy {
-	if (!project) throw new Error("Active project sandbox policy is unavailable");
-	return project;
-}
-
-function accessError(message: string, reason: string) {
-	return {
-		content: [{ type: "text" as const, text: `${message} No command was retried.` }],
-		details: { granted: false, reason, commandRetried: false },
-		isError: true,
-	};
+function requireReadyState(state: SandboxState): Extract<SandboxState, { kind: "ready" }> {
+	if (state.kind !== "ready") throw new Error("Sandbox is not ready");
+	return state;
 }
 
 function toolError(message: string) {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -9,6 +9,7 @@ import {
 	isControlRootSymlink,
 	isInside,
 	isProtectedPath,
+	isProtectedWritePath,
 	normalizeNetworkHost,
 	permissionCoversPath,
 	projectControlRoot,
@@ -39,6 +40,9 @@ test("project control roots are identified before symlink canonicalization", () 
 
 test("hard protected paths and exact network hosts remain strict", () => {
 	assert.equal(isProtectedPath("/dev/tty"), true);
+	assert.equal(isProtectedPath(join(homedir(), ".config", "guardian", "sandbox.json")), true);
+	assert.equal(isProtectedWritePath(join(homedir(), ".config", "guardian", "session-rights")), true);
+	assert.equal(isProtectedWritePath(join(homedir(), ".guardian")), false);
 	assert.equal(normalizeNetworkHost("API.Example.COM."), "api.example.com");
 	assert.equal(normalizeNetworkHost("[::1]"), "::1");
 	assert.throws(() => normalizeNetworkHost("https://example.com"), /exact hostname/);

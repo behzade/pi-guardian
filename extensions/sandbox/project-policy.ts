@@ -214,12 +214,33 @@ export function sameProjectPolicy(
 	return JSON.stringify(normalizeProjectPolicy(left)) === JSON.stringify(normalizeProjectPolicy(right));
 }
 
-/** Renders only bounded, semantic net-new entries that approval will add. */
-export function projectPolicyDiff(
+export function mergeAccessPolicies(
+	...policies: readonly ProjectSandboxPolicy[]
+): ProjectSandboxPolicy {
+	const rights: ProjectAccessRight[] = [];
+	const environment: Record<string, string> = {};
+	for (const policy of policies) {
+		const normalized = normalizeProjectPolicy(policy);
+		rights.push(...normalized.rights);
+		for (const [name, target] of Object.entries(normalized.developmentCache?.environment ?? {})) {
+			const existing = environment[name];
+			if (existing !== undefined && existing !== target) {
+				throw new Error(`Sandbox access policies contain conflicting development-cache mapping ${name}`);
+			}
+			environment[name] = target;
+		}
+	}
+	return normalizeProjectPolicy({
+		version: 1,
+		rights,
+		...(Object.keys(environment).length > 0 ? { developmentCache: { environment } } : {}),
+	});
+}
+
+export function accessPolicyAdditions(
 	before: ProjectSandboxPolicy,
 	after: ProjectSandboxPolicy,
-	cwd: string,
-): string {
+): ProjectSandboxPolicy {
 	const beforeNormalized = normalizeProjectPolicy(before);
 	const afterNormalized = normalizeProjectPolicy(after);
 	const beforeRights = new Set(beforeNormalized.rights.map(rightKey));
@@ -229,14 +250,30 @@ export function projectPolicyDiff(
 		Object.entries(afterNormalized.developmentCache?.environment ?? {})
 			.filter(([name, target]) => previousEnvironment[name] !== target),
 	);
-	const additions = {
-		...(rights.length > 0 ? { rights } : {}),
-		...(Object.keys(environment).length > 0
-			? { developmentCache: { environment } }
-			: {}),
-	};
+	return normalizeProjectPolicy({
+		version: 1,
+		rights,
+		...(Object.keys(environment).length > 0 ? { developmentCache: { environment } } : {}),
+	});
+}
+
+/** Renders only bounded, semantic net-new entries that approval will add. */
+export function projectPolicyDiff(
+	before: ProjectSandboxPolicy,
+	after: ProjectSandboxPolicy,
+	cwd: string,
+): string {
+	return sandboxPolicyDiff(before, after, `Project policy additions: ${projectPolicyPath(cwd)}`);
+}
+
+export function sandboxPolicyDiff(
+	before: ProjectSandboxPolicy,
+	after: ProjectSandboxPolicy,
+	heading: string,
+): string {
+	const additions = accessPolicyAdditions(before, after);
 	return [
-		`Project policy additions: ${projectPolicyPath(cwd)}`,
+		heading,
 		"",
 		"```json",
 		JSON.stringify(additions, null, 2),
