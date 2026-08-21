@@ -9,11 +9,10 @@ import {
 	addSessionAccess,
 	loadProjectPolicyForUpdate,
 	mergeAccessPolicies,
-	projectPolicyDiff,
 	projectPolicyPath,
 	requestsRequireSessionScope,
 	sameProjectPolicy,
-	sandboxPolicyDiff,
+	sandboxPolicySummary,
 	saveProjectPolicy,
 	type ActiveProjectPolicy,
 	type ProjectAccessRequest,
@@ -105,19 +104,12 @@ export function registerAccessRequest(
 			const sessionTarget = access.sessionIdentity
 				? sessionPolicyPath(access.sessionIdentity)
 				: "the current ephemeral Pi session";
-			const sessionDiff = sandboxPolicyDiff(
-				effective.policy,
-				effectiveCandidate.policy,
-				`Session policy additions: ${sessionTarget}`,
-			);
-			const projectDiff = projectCandidate
-				? projectPolicyDiff(diskProject.policy, projectCandidate.policy, ctx.cwd)
-				: undefined;
-			const diff = sessionChanged && projectDiff
-				? `${sessionDiff}\n\n${projectDiff}`
-				: sessionChanged
-					? sessionDiff
-					: projectDiff!;
+			// Both choices grant the same request at different lifetimes. Render the
+			// validated additions once instead of repeating session and project JSON.
+			const displayedAdditions = projectCandidate
+				? accessPolicyAdditions(diskProject.policy, projectCandidate.policy)
+				: accessPolicyAdditions(effective.policy, effectiveCandidate.policy);
+			const diff = sandboxPolicySummary(displayedAdditions);
 			const projectSourceSnapshot = diskProject.sourceText;
 			const sessionSourceSnapshot = diskSession.sourceText;
 			pi.events.emit("approval:requested", {

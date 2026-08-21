@@ -17,6 +17,7 @@ import {
 	projectPolicyDiff,
 	projectPolicyPath,
 	sameProjectPolicy,
+	sandboxPolicySummary,
 	saveProjectPolicy,
 	serializeProjectPolicy,
 	type ProjectSandboxPolicy,
@@ -300,11 +301,33 @@ test("request batches check only net-new sibling files and support cache adapter
 		kind: "development_cache", environment: { CARGO_HOME: "replacement" },
 	}], cwd, machine), /cannot replace managed (?:cache )?mapping CARGO_HOME/);
 	const diff = projectPolicyDiff(historical, active.policy, cwd);
-	assert.match(diff, /\n\n```json\n\{/);
-	assert.match(diff, /example\.com/);
-	assert.match(diff, /CUSTOM_BUILD_CACHE/);
-	assert.doesNotMatch(diff, /^\+ /m);
+	assert.match(diff, /^Project policy additions:/);
+	assert.match(diff, /network host       "example\.com"/);
+	assert.match(diff, /cache   CUSTOM_BUILD_CACHE  "custom\/build"/);
+	assert.doesNotMatch(diff, /```json|^\+ /m);
 	assert.doesNotMatch(diff, /history\/a/);
+});
+
+test("approval summaries render validated rights once as a compact list", () => {
+	const summary = sandboxPolicySummary({
+		version: 1,
+		rights: [
+			{ kind: "filesystem", access: "read", path: "docs", scope: "tree" },
+			{ kind: "filesystem", access: "write", path: "result.txt", scope: "file" },
+			{ kind: "network_host", host: "example.com" },
+			{ kind: "network_endpoint", host: "localhost", port: 3000 },
+		],
+		developmentCache: { environment: { CARGO_HOME: "cargo" } },
+	});
+	assert.equal(summary, [
+		"Requested sandbox rights:",
+		"  read    directory  \"docs\"",
+		"  write   file       \"result.txt\"",
+		"  network host       \"example.com\"",
+		"  network endpoint   \"localhost:3000\"",
+		"  cache   CARGO_HOME  \"cargo\"",
+	].join("\n"));
+	assert.equal(summary.match(/Requested sandbox rights:/g)?.length, 1);
 });
 
 test("a fresh project snapshot treats another agent's approved rights as existing", () => {
@@ -323,8 +346,8 @@ test("a fresh project snapshot treats another agent's approved rights as existin
 	], cwd, machine);
 	const diff = projectPolicyDiff(synchronized.policy, candidate.policy, cwd);
 
-	assert.match(diff, /"path": "\.git"/);
-	assert.doesNotMatch(diff, /"path": "~\/shared"/);
+	assert.match(diff, /write   directory  "\.git"/);
+	assert.doesNotMatch(diff, /~\/shared/);
 	assert.equal(sameProjectPolicy(
 		{ ...synchronized.policy, developmentCache: { environment: {} } },
 		synchronized.policy,

@@ -325,14 +325,26 @@ export function sandboxPolicyDiff(
 	after: ProjectSandboxPolicy,
 	heading: string,
 ): string {
-	const additions = accessPolicyAdditions(before, after);
-	return [
-		heading,
-		"",
-		"```json",
-		JSON.stringify(additions, null, 2),
-		"```",
-	].join("\n");
+	return sandboxPolicySummary(accessPolicyAdditions(before, after), heading);
+}
+
+export function sandboxPolicySummary(
+	additions: ProjectSandboxPolicy,
+	heading = "Requested sandbox rights:",
+): string {
+	const lines = additions.rights.map((right) => {
+		if (right.kind === "filesystem") {
+			return `  ${right.access.padEnd(8)}${(right.scope === "tree" ? "directory" : "file").padEnd(11)}${JSON.stringify(right.path)}`;
+		}
+		if (right.kind === "network_host") {
+			return `  ${"network".padEnd(8)}${"host".padEnd(11)}${JSON.stringify(right.host)}`;
+		}
+		return `  ${"network".padEnd(8)}${"endpoint".padEnd(11)}${JSON.stringify(`${right.host}:${right.port}`)}`;
+	});
+	for (const [name, target] of Object.entries(additions.developmentCache?.environment ?? {})) {
+		lines.push(`  ${"cache".padEnd(8)}${name}  ${JSON.stringify(target)}`);
+	}
+	return [heading, ...lines].join("\n");
 }
 
 export function normalizeProjectPolicy(value: unknown): ProjectSandboxPolicy {
