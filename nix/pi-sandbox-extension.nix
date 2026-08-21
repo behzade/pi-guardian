@@ -33,6 +33,7 @@ stdenvNoCC.mkDerivation {
     done
     cp package.json package-lock.json $out/
     cp -R ${nodeModules}/node_modules "$out/"
+    chmod -R u+w "$out/node_modules"
     ${lib.optionalString (piCodingAgent != null) ''
       mkdir -p "$out/node_modules/@earendil-works"
       ln -s ${piCodingAgent} "$out/node_modules/@earendil-works/pi-coding-agent"

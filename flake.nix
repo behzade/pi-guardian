@@ -31,8 +31,27 @@
         }
       );
 
-      checks = forAllSystems (system: {
-        guardian = self.packages.${system}.guardian;
-      });
+      checks = forAllSystems (
+        system:
+        let
+          pkgs = import nixpkgs { inherit system; };
+          mcpCli = pkgs.callPackage ./nix/pi-mcp-cli.nix { };
+          piCodingAgent = pkgs.runCommand "pi-coding-agent-test-fixture" { } ''
+            mkdir -p "$out"
+          '';
+          guardianWithPi = pkgs.callPackage ./nix/pi-sandbox-extension.nix {
+            inherit mcpCli piCodingAgent;
+            nono = pkgs.nono;
+            bubblewrap = if pkgs.stdenv.hostPlatform.isLinux then pkgs.bubblewrap else null;
+          };
+        in
+        {
+          guardian = self.packages.${system}.guardian;
+          guardian-peer-wiring = pkgs.runCommand "pi-guardian-peer-wiring-test" { } ''
+            test "$(readlink ${guardianWithPi}/node_modules/@earendil-works/pi-coding-agent)" = ${piCodingAgent}
+            touch "$out"
+          '';
+        }
+      );
     };
 }
