@@ -30,7 +30,9 @@ project and bound to both its session ID and exact session file:
 
 They survive restart and resume, but are not inherited by new, forked, or
 cloned sessions. Ephemeral Pi sessions keep session rights only in memory.
-The user chooses session or project scope in the approval prompt.
+The user chooses session or project scope in the approval prompt. Absolute paths
+outside the project and home directory are host-specific, so Guardian offers
+only session scope for them; they are never written to checked-in project policy.
 
 The adapter reads the legacy `.pi/extensions/sandbox/sandbox.json` only when the
 new policy is absent; the next approved update writes `.guardian/sandbox.json`.

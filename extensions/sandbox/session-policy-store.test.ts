@@ -34,12 +34,15 @@ function fixture(): { cwd: string; root: string; identity: SessionPolicyIdentity
 
 test("session rights persist in a user-local sidecar bound to exact Pi session identity", () => {
 	const { cwd, root, identity } = fixture();
+	const external = join(cwd, "..", "mounted-assets");
+	mkdirSync(external);
 	const initial = loadSessionPolicy(identity, machine, root);
 	assert.deepEqual(initial.policy, { version: 1, rights: [] });
 	const source = saveSessionPolicy(identity, {
 		version: 1,
 		rights: [
 			{ kind: "filesystem", access: "write", path: "state", scope: "tree" },
+			{ kind: "filesystem", access: "read", path: external, scope: "tree" },
 			{ kind: "network_host", host: "API.Example.COM." },
 		],
 	}, initial.sourceText, root);
@@ -51,6 +54,7 @@ test("session rights persist in a user-local sidecar bound to exact Pi session i
 	const restored = loadSessionPolicy(identity, machine, root);
 	assert.equal(restored.networkHosts[0], "api.example.com");
 	assert(restored.filesystem.some((right) => right.path === join(cwd, "state")));
+	assert(restored.filesystem.some((right) => right.path === external && right.directory));
 
 	assert.throws(
 		() => loadSessionPolicy({ ...identity, cwd: join(cwd, "other") }, machine, root),

@@ -1,6 +1,7 @@
 import { ensureDevelopmentCacheDirectories } from "./development-caches.ts";
 import {
 	activateProjectPolicy,
+	activateSessionPolicy,
 	EMPTY_PROJECT_POLICY,
 	loadProjectPolicy,
 	loadProjectPolicyForUpdate,
@@ -37,7 +38,7 @@ export class ActiveAccessPolicy {
 		const session = trusted && sessionIdentity
 			? loadSessionPolicy(sessionIdentity, machineConfig)
 			: empty();
-		const effective = activateProjectPolicy(
+		const effective = activateSessionPolicy(
 			mergeAccessPolicies(project.policy, session.policy),
 			cwd,
 			machineConfig,
@@ -59,7 +60,7 @@ export class ActiveAccessPolicy {
 		const previous = this.effective;
 		this.project = project;
 		this.session = session;
-		this.effective = activateProjectPolicy(
+		this.effective = activateSessionPolicy(
 			mergeAccessPolicies(project.policy, session.policy),
 			this.cwd,
 			this.machineConfig,
@@ -71,7 +72,7 @@ export class ActiveAccessPolicy {
 	}
 
 	revalidate(policy: ActiveProjectPolicy = this.effective): ActiveProjectPolicy {
-		return activateProjectPolicy(
+		return activateSessionPolicy(
 			policy.policy,
 			this.cwd,
 			this.machineConfig,

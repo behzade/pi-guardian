@@ -78,7 +78,27 @@ export function activateProjectPolicy(
 	globalConfig: NativeSandboxConfig,
 	sourceText: string | null = null,
 ): ActiveProjectPolicy {
-	const normalized = normalizeProjectPolicy(policy);
+	return activateAccessPolicy(policy, cwd, globalConfig, sourceText, false);
+}
+
+/** Activates a session/effective policy, which may contain host-specific absolute paths. */
+export function activateSessionPolicy(
+	policy: ProjectSandboxPolicy,
+	cwd: string,
+	globalConfig: NativeSandboxConfig,
+	sourceText: string | null = null,
+): ActiveProjectPolicy {
+	return activateAccessPolicy(policy, cwd, globalConfig, sourceText, true);
+}
+
+function activateAccessPolicy(
+	policy: ProjectSandboxPolicy,
+	cwd: string,
+	globalConfig: NativeSandboxConfig,
+	sourceText: string | null,
+	allowAbsolutePaths: boolean,
+): ActiveProjectPolicy {
+	const normalized = normalizeAccessPolicy(policy, allowAbsolutePaths);
 	const config = withProjectCacheEnvironment(globalConfig, normalized);
 	const filesystem: IoPermission[] = [];
 	const networkHosts = new Set<string>();
@@ -122,6 +142,25 @@ export function addProjectAccess(
 	cwd: string,
 	globalConfig: NativeSandboxConfig,
 ): ActiveProjectPolicy {
+	return addAccess(current, requests, cwd, globalConfig, false);
+}
+
+export function addSessionAccess(
+	current: ProjectSandboxPolicy,
+	requests: readonly ProjectAccessRequest[],
+	cwd: string,
+	globalConfig: NativeSandboxConfig,
+): ActiveProjectPolicy {
+	return addAccess(current, requests, cwd, globalConfig, true);
+}
+
+function addAccess(
+	current: ProjectSandboxPolicy,
+	requests: readonly ProjectAccessRequest[],
+	cwd: string,
+	globalConfig: NativeSandboxConfig,
+	allowAbsolutePaths: boolean,
+): ActiveProjectPolicy {
 	if (requests.length === 0) throw new Error("request_access needs at least one access request");
 	if (requests.length > 32) throw new Error("request_access accepts at most 32 access requests");
 
@@ -159,10 +198,10 @@ export function addProjectAccess(
 			}
 			continue;
 		}
-		requestedRights.push(normalizeRequestedRight(request, cwd));
+		requestedRights.push(normalizeRequestedRight(request, cwd, allowAbsolutePaths));
 	}
 
-	const currentNormalized = normalizeProjectPolicy(current);
+	const currentNormalized = normalizeAccessPolicy(current, allowAbsolutePaths);
 	const currentKeys = new Set(currentNormalized.rights.map(rightKey));
 	const uniqueRequestedRights = [...new Map(
 		requestedRights.map((right) => [rightKey(right), right]),
@@ -173,14 +212,16 @@ export function addProjectAccess(
 		...(currentNormalized.developmentCache?.environment ?? {}),
 		...requestedEnvironment,
 	};
-	const candidate = normalizeProjectPolicy({
+	const candidate = normalizeAccessPolicy({
 		...currentNormalized,
 		rights: [...currentNormalized.rights, ...netNewRights],
 		...(Object.keys(environment).length > 0
 			? { developmentCache: { environment } }
 			: {}),
-	});
-	return activateProjectPolicy(candidate, cwd, globalConfig);
+	}, allowAbsolutePaths);
+	return allowAbsolutePaths
+		? activateSessionPolicy(candidate, cwd, globalConfig)
+		: activateProjectPolicy(candidate, cwd, globalConfig);
 }
 
 export function addProjectRights(
@@ -190,6 +231,19 @@ export function addProjectRights(
 	globalConfig: NativeSandboxConfig,
 ): ActiveProjectPolicy {
 	return addProjectAccess(current, rights, cwd, globalConfig);
+}
+
+export function requestsRequireSessionScope(
+	requests: readonly ProjectAccessRequest[],
+	cwd: string,
+): boolean {
+	const workspace = resolve(cwd);
+	const home = resolve(homedir());
+	return requests.some((request) => {
+		if (request.kind !== "filesystem" || !isAbsolute(request.path)) return false;
+		const absolute = resolve(request.path);
+		return !isInside(workspace, absolute) && !isInside(home, absolute);
+	});
 }
 
 /** Trusted host write used only after the user approves the displayed additions. */
@@ -211,7 +265,7 @@ export function sameProjectPolicy(
 	left: ProjectSandboxPolicy,
 	right: ProjectSandboxPolicy,
 ): boolean {
-	return JSON.stringify(normalizeProjectPolicy(left)) === JSON.stringify(normalizeProjectPolicy(right));
+	return JSON.stringify(normalizeSessionPolicy(left)) === JSON.stringify(normalizeSessionPolicy(right));
 }
 
 export function mergeAccessPolicies(
@@ -220,7 +274,7 @@ export function mergeAccessPolicies(
 	const rights: ProjectAccessRight[] = [];
 	const environment: Record<string, string> = {};
 	for (const policy of policies) {
-		const normalized = normalizeProjectPolicy(policy);
+		const normalized = normalizeSessionPolicy(policy);
 		rights.push(...normalized.rights);
 		for (const [name, target] of Object.entries(normalized.developmentCache?.environment ?? {})) {
 			const existing = environment[name];
@@ -230,7 +284,7 @@ export function mergeAccessPolicies(
 			environment[name] = target;
 		}
 	}
-	return normalizeProjectPolicy({
+	return normalizeSessionPolicy({
 		version: 1,
 		rights,
 		...(Object.keys(environment).length > 0 ? { developmentCache: { environment } } : {}),
@@ -241,8 +295,8 @@ export function accessPolicyAdditions(
 	before: ProjectSandboxPolicy,
 	after: ProjectSandboxPolicy,
 ): ProjectSandboxPolicy {
-	const beforeNormalized = normalizeProjectPolicy(before);
-	const afterNormalized = normalizeProjectPolicy(after);
+	const beforeNormalized = normalizeSessionPolicy(before);
+	const afterNormalized = normalizeSessionPolicy(after);
 	const beforeRights = new Set(beforeNormalized.rights.map(rightKey));
 	const rights = afterNormalized.rights.filter((right) => !beforeRights.has(rightKey(right)));
 	const previousEnvironment = beforeNormalized.developmentCache?.environment ?? {};
@@ -250,7 +304,7 @@ export function accessPolicyAdditions(
 		Object.entries(afterNormalized.developmentCache?.environment ?? {})
 			.filter(([name, target]) => previousEnvironment[name] !== target),
 	);
-	return normalizeProjectPolicy({
+	return normalizeSessionPolicy({
 		version: 1,
 		rights,
 		...(Object.keys(environment).length > 0 ? { developmentCache: { environment } } : {}),
@@ -282,6 +336,14 @@ export function sandboxPolicyDiff(
 }
 
 export function normalizeProjectPolicy(value: unknown): ProjectSandboxPolicy {
+	return normalizeAccessPolicy(value, false);
+}
+
+export function normalizeSessionPolicy(value: unknown): ProjectSandboxPolicy {
+	return normalizeAccessPolicy(value, true);
+}
+
+function normalizeAccessPolicy(value: unknown, allowAbsolutePaths: boolean): ProjectSandboxPolicy {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
 		throw new Error("project sandbox policy must be a JSON object");
 	}
@@ -290,7 +352,7 @@ export function normalizeProjectPolicy(value: unknown): ProjectSandboxPolicy {
 	if (input.version !== 1) throw new Error("project sandbox policy version must be 1");
 	if (!Array.isArray(input.rights)) throw new Error("project sandbox policy rights must be an array");
 	if (input.rights.length > 256) throw new Error("project sandbox policy accepts at most 256 rights");
-	const rights = input.rights.map(normalizeRight);
+	const rights = input.rights.map((right) => normalizeRight(right, allowAbsolutePaths));
 	const uniqueRights = [...new Map(rights.map((right) => [rightKey(right), right])).values()]
 		.sort((left, right) => rightKey(left).localeCompare(rightKey(right)));
 	if (uniqueRights.filter((right) => right.kind === "filesystem").length > 64) {
@@ -328,12 +390,19 @@ export function normalizeProjectPolicy(value: unknown): ProjectSandboxPolicy {
 	};
 }
 
-function normalizeRequestedRight(right: ProjectAccessRight, cwd: string): ProjectAccessRight {
-	if (right.kind !== "filesystem") return normalizeRight(right);
-	return normalizeRight({ ...right, path: portableRequestPath(right.path, cwd) });
+function normalizeRequestedRight(
+	right: ProjectAccessRight,
+	cwd: string,
+	allowAbsolutePaths: boolean,
+): ProjectAccessRight {
+	if (right.kind !== "filesystem") return normalizeRight(right, allowAbsolutePaths);
+	return normalizeRight({
+		...right,
+		path: portableRequestPath(right.path, cwd, allowAbsolutePaths),
+	}, allowAbsolutePaths);
 }
 
-function normalizeRight(value: unknown): ProjectAccessRight {
+function normalizeRight(value: unknown, allowAbsolutePaths = false): ProjectAccessRight {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
 		throw new Error("each project sandbox right must be a JSON object");
 	}
@@ -349,7 +418,7 @@ function normalizeRight(value: unknown): ProjectAccessRight {
 		return {
 			kind: "filesystem",
 			access: right.access,
-			path: normalizePortablePath(right.path),
+			path: normalizeFilesystemPath(right.path, allowAbsolutePaths),
 			scope: right.scope,
 		};
 	}
@@ -431,7 +500,7 @@ function withProjectCacheEnvironment(
 	};
 }
 
-function portableRequestPath(value: unknown, cwd: string): string {
+function portableRequestPath(value: unknown, cwd: string, allowAbsolutePaths: boolean): string {
 	if (typeof value !== "string" || value.length === 0 || value.includes("\0")) {
 		throw new Error("filesystem path must be a non-empty portable path");
 	}
@@ -448,7 +517,19 @@ function portableRequestPath(value: unknown, cwd: string): string {
 		const path = relative(home, absolute);
 		return path ? `~/${path}` : "~";
 	}
+	if (allowAbsolutePaths) return absolute;
 	throw new Error("Absolute filesystem request paths must be inside the project or home directory");
+}
+
+function normalizeFilesystemPath(value: unknown, allowAbsolutePaths: boolean): string {
+	if (allowAbsolutePaths && typeof value === "string" && isAbsolute(value)) {
+		if (value.length === 0 || value.includes("\0")) {
+			throw new Error("filesystem path must be a non-empty path");
+		}
+		if (value.length > 1024) throw new Error("filesystem paths must be at most 1024 characters");
+		return resolve(value);
+	}
+	return normalizePortablePath(value);
 }
 
 function normalizePortablePath(value: unknown): string {
@@ -480,11 +561,16 @@ function normalizePortablePath(value: unknown): string {
 function expandPortablePath(path: string, cwd: string): string {
 	if (path === "~") return homedir();
 	if (path.startsWith("~/")) return resolve(homedir(), path.slice(2));
+	if (isAbsolute(path)) return resolve(path);
 	return resolve(cwd, path);
 }
 
 function assertNoExistingSymlink(path: string, cwd: string): void {
-	const root = path === "~" || path.startsWith("~/") ? resolve(homedir()) : resolve(cwd);
+	const root = isAbsolute(path)
+		? resolve(path).split(sep)[0] || sep
+		: path === "~" || path.startsWith("~/")
+			? resolve(homedir())
+			: resolve(cwd);
 	const target = expandPortablePath(path, cwd);
 	const rel = relative(root, target);
 	let current = root;

@@ -4,12 +4,14 @@ import { ActiveAccessPolicy } from "./active-access-policy.ts";
 import { requestUserApproval } from "./approval-transport.ts";
 import {
 	accessPolicyAdditions,
-	activateProjectPolicy,
+	activateSessionPolicy,
 	addProjectAccess,
+	addSessionAccess,
 	loadProjectPolicyForUpdate,
 	mergeAccessPolicies,
 	projectPolicyDiff,
 	projectPolicyPath,
+	requestsRequireSessionScope,
 	sameProjectPolicy,
 	sandboxPolicyDiff,
 	saveProjectPolicy,
@@ -33,7 +35,7 @@ export function registerAccessRequest(
 		name: "request_access",
 		label: "Request sandbox access",
 		description:
-			"Ask the user to grant portable filesystem, exact network host or loopback endpoint, and/or managed development-cache rights for this Pi session or the checked-in project policy. This host tool updates policy only; it never runs or retries a command.",
+			"Ask the user to grant filesystem, exact network host or loopback endpoint, and/or managed development-cache rights. Host-specific absolute paths can be approved only for this Pi session; portable rights may also enter checked-in project policy. This host tool updates policy only; it never runs or retries a command.",
 		promptSnippet:
 			"After a sandbox denial, request the smallest useful right. The user chooses session or project scope. If approved, explicitly rerun later.",
 		parameters: RequestAccessParams,
@@ -58,23 +60,26 @@ export function registerAccessRequest(
 			const diskProject = access.project;
 			const diskSession = access.session;
 			const effective = access.effective;
-			let projectCandidate: ActiveProjectPolicy;
+			let projectCandidate: ActiveProjectPolicy | undefined;
 			let sessionCandidate: ActiveProjectPolicy;
 			let effectiveCandidate: ActiveProjectPolicy;
+			const requests = params.rights as ProjectAccessRequest[];
 			try {
-				projectCandidate = addProjectAccess(
-					diskProject.policy,
-					params.rights as ProjectAccessRequest[],
-					ctx.cwd,
-					access.machineConfig,
-				);
-				effectiveCandidate = addProjectAccess(
+				effectiveCandidate = addSessionAccess(
 					effective.policy,
-					params.rights as ProjectAccessRequest[],
+					requests,
 					ctx.cwd,
 					access.machineConfig,
 				);
-				sessionCandidate = activateProjectPolicy(
+				if (!requestsRequireSessionScope(requests, ctx.cwd)) {
+					projectCandidate = addProjectAccess(
+						diskProject.policy,
+						requests,
+						ctx.cwd,
+						access.machineConfig,
+					);
+				}
+				sessionCandidate = activateSessionPolicy(
 					mergeAccessPolicies(
 						diskSession.policy,
 						accessPolicyAdditions(effective.policy, effectiveCandidate.policy),
@@ -86,10 +91,13 @@ export function registerAccessRequest(
 			} catch (error) {
 				return accessError(errorMessage(error), "invalid-request");
 			}
-			if (sameProjectPolicy(projectCandidate.policy, diskProject.policy)) {
+			if (
+				sameProjectPolicy(effectiveCandidate.policy, effective.policy) &&
+				(!projectCandidate || sameProjectPolicy(projectCandidate.policy, diskProject.policy))
+			) {
 				return {
-					content: [{ type: "text", text: `All requested rights are already active in ${projectPolicyPath(ctx.cwd)}. No command was retried.` }],
-					details: { granted: true, existing: true, scope: "project", policyPath: projectPolicyPath(ctx.cwd), commandRetried: false },
+					content: [{ type: "text", text: "All requested rights are already active. No command was retried." }],
+					details: { granted: true, existing: true, commandRetried: false },
 				};
 			}
 
@@ -102,8 +110,14 @@ export function registerAccessRequest(
 				effectiveCandidate.policy,
 				`Session policy additions: ${sessionTarget}`,
 			);
-			const projectDiff = projectPolicyDiff(diskProject.policy, projectCandidate.policy, ctx.cwd);
-			const diff = sessionChanged ? `${sessionDiff}\n\n${projectDiff}` : projectDiff;
+			const projectDiff = projectCandidate
+				? projectPolicyDiff(diskProject.policy, projectCandidate.policy, ctx.cwd)
+				: undefined;
+			const diff = sessionChanged && projectDiff
+				? `${sessionDiff}\n\n${projectDiff}`
+				: sessionChanged
+					? sessionDiff
+					: projectDiff!;
 			const projectSourceSnapshot = diskProject.sourceText;
 			const sessionSourceSnapshot = diskSession.sourceText;
 			pi.events.emit("approval:requested", {
@@ -122,10 +136,14 @@ export function registerAccessRequest(
 				message: `${diff}\n\nReason: ${params.reason}`,
 				source: "tool_call",
 				surface: "project_policy",
-				value: access.sessionIdentity ? `${sessionTarget} or ${projectPolicyPath(ctx.cwd)}` : projectPolicyPath(ctx.cwd),
+				value: projectCandidate
+					? access.sessionIdentity
+						? `${sessionTarget} or ${projectPolicyPath(ctx.cwd)}`
+						: projectPolicyPath(ctx.cwd)
+					: sessionTarget,
 				choices: [
 					...(sessionChanged ? [{ id: "session", label: access.sessionIdentity ? "Allow for this Pi session" : "Allow until this ephemeral session exits" }] : []),
-					{ id: "project", label: "Add to project policy" },
+					...(projectCandidate ? [{ id: "project", label: "Add to project policy" }] : []),
 					{ id: "deny", label: "Deny" },
 				],
 				signal,
@@ -153,6 +171,7 @@ export function registerAccessRequest(
 					throw new Error("Sandbox access policy changed while request_access was awaiting approval");
 				}
 				if (result.choiceId === "project") {
+					if (!projectCandidate) throw new Error("Host-specific filesystem paths can be approved only for this Pi session");
 					projectCandidate.sourceText = saveProjectPolicy(ctx.cwd, projectCandidate.policy, projectSourceSnapshot);
 					access.replace(projectCandidate, freshSession);
 				} else {

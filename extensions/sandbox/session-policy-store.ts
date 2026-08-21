@@ -16,9 +16,9 @@ import { resolve } from "node:path";
 import type { NativeSandboxConfig } from "./sandbox-config.ts";
 import { canonicalize } from "./io-permissions.ts";
 import {
-	activateProjectPolicy,
+	activateSessionPolicy,
 	EMPTY_PROJECT_POLICY,
-	normalizeProjectPolicy,
+	normalizeSessionPolicy,
 	type ActiveProjectPolicy,
 	type ProjectSandboxPolicy,
 } from "./project-policy.ts";
@@ -59,7 +59,7 @@ export function loadSessionPolicy(
 	const path = sessionPolicyPath(identity, configRoot);
 	const sourceText = readPolicySource(path);
 	if (sourceText === null) {
-		return activateProjectPolicy(EMPTY_PROJECT_POLICY, identity.cwd, globalConfig);
+		return activateSessionPolicy(EMPTY_PROJECT_POLICY, identity.cwd, globalConfig);
 	}
 	const expected = validateSessionIdentity(identity);
 	const record = normalizeRecord(JSON.parse(sourceText));
@@ -70,7 +70,7 @@ export function loadSessionPolicy(
 	) {
 		throw new Error("Session sandbox policy identity does not match the active Pi session");
 	}
-	return activateProjectPolicy(record.policy, expected.cwd, globalConfig, sourceText);
+	return activateSessionPolicy(record.policy, expected.cwd, globalConfig, sourceText);
 }
 
 /** Trusted-host write after approval, conditional on the exact loaded bytes. */
@@ -89,7 +89,7 @@ export function saveSessionPolicy(
 	const record: SessionPolicyRecord = {
 		version: 1,
 		...expected,
-		policy: normalizeProjectPolicy(policy),
+		policy: normalizeSessionPolicy(policy),
 	};
 	const sourceText = `${JSON.stringify(record, null, 2)}\n`;
 	const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
@@ -167,7 +167,7 @@ function normalizeRecord(value: unknown): SessionPolicyRecord {
 		sessionId: input.sessionId,
 		sessionFile: resolve(input.sessionFile),
 		cwd: resolve(input.cwd),
-		policy: normalizeProjectPolicy(input.policy),
+		policy: normalizeSessionPolicy(input.policy),
 	};
 }
 

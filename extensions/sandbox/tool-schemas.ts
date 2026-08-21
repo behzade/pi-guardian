@@ -6,7 +6,7 @@ const AccessRightParams = Type.Union([
 			kind: Type.Literal("filesystem"),
 			access: Type.Union([Type.Literal("read"), Type.Literal("write")]),
 			path: Type.String({
-				description: "Project-relative or home-relative (~/); absolute denial paths under those roots are converted before storage",
+				description: "Project-relative or home-relative (~/); absolute paths outside those roots can be approved only for this Pi session",
 				maxLength: 1024,
 			}),
 			scope: Type.Union([Type.Literal("file"), Type.Literal("tree")]),

@@ -10,6 +10,7 @@ import {
 	activateProjectPolicy,
 	addProjectAccess,
 	addProjectRights,
+	addSessionAccess,
 	loadProjectPolicy,
 	loadProjectPolicyForUpdate,
 	mergeAccessPolicies,
@@ -195,16 +196,22 @@ test("symlinked project policy directories cannot supply or receive policy", () 
 	assert.throws(() => saveProjectPolicy(sandboxLink, basePolicy()), /symlinked project control folder/);
 });
 
-test("request paths are converted to portable forms and checked-in absolutes are rejected", () => {
+test("request paths are converted to portable forms while external absolutes are session-only", () => {
 	const cwd = workspace();
+	const external = workspace();
 	const active = addProjectRights(basePolicy(), [
 		{ kind: "filesystem", access: "write", path: join(cwd, "state"), scope: "tree" },
 		{ kind: "filesystem", access: "write", path: join(homedir(), "shared.txt"), scope: "file" },
 	], cwd, machine);
 	assert(active.policy.rights.some((right) => right.kind === "filesystem" && right.path === "state"));
 	assert(active.policy.rights.some((right) => right.kind === "filesystem" && right.path === "~/shared.txt"));
+	const session = addSessionAccess(basePolicy(), [{
+		kind: "filesystem", access: "read", path: external, scope: "tree",
+	}], cwd, machine);
+	assert(session.policy.rights.some((right) => right.kind === "filesystem" && right.path === external));
+	assert(session.filesystem.some((right) => right.path === external && right.directory));
 	assert.throws(() => addProjectRights(basePolicy(), [{
-		kind: "filesystem", access: "read", path: "/opt/non-portable", scope: "file",
+		kind: "filesystem", access: "read", path: external, scope: "tree",
 	}], cwd, machine), /must be inside the project or home/);
 	assert.throws(() => activateProjectPolicy({
 		version: 1,
