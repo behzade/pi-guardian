@@ -29,6 +29,13 @@ interface NativeJob {
 	fiber: Fiber.Fiber<void, never>;
 }
 
+export interface BackgroundJobSettlement {
+	name: string;
+	state: "completed" | "exited" | "failed";
+	exitCode?: number;
+	error?: string;
+}
+
 interface StartOptions {
 	name: string;
 	command: string;
@@ -45,11 +52,17 @@ export class NativeBackgroundJobs {
 	readonly #bwrapPath: string;
 	readonly #jobs = new Map<string, NativeJob>();
 	readonly #scope = Scope.makeUnsafe();
+	readonly #onSettled: (settlement: BackgroundJobSettlement) => void;
 	#closed = false;
 
-	constructor(nonoPath: string, bwrapPath: string) {
+	constructor(
+		nonoPath: string,
+		bwrapPath: string,
+		onSettled: (settlement: BackgroundJobSettlement) => void = () => {},
+	) {
 		this.#nonoPath = nonoPath;
 		this.#bwrapPath = bwrapPath;
+		this.#onSettled = onSettled;
 	}
 
 	readonly startEffect = Effect.fn("NativeBackgroundJobs.start")(function* (this: NativeBackgroundJobs, options: StartOptions) {
@@ -103,6 +116,11 @@ export class NativeBackgroundJobs {
 				const cause = Cause.squash(exit.cause);
 				job.error = cause instanceof Error ? cause.message : String(cause);
 				Deferred.doneUnsafe(started, Effect.fail(jobError(cause)));
+			}
+			if (job.pid !== undefined) {
+				yield* Effect.sync(() => manager.#onSettled(jobSettlement(job))).pipe(
+					Effect.catchCause(() => Effect.void),
+				);
 			}
 		}).pipe(
 			Effect.onExit(() => Effect.sync(() => {
@@ -187,7 +205,12 @@ function jobState(job: NativeJob): string {
 	return "running";
 }
 
-export function backgroundKeyBytes(keys: readonly string[]): Buffer {
-	const values: Record<string, string> = { Enter: "\n", Tab: "\t", BSpace: "\x7f", Escape: "\x1b", "C-c": "\x03", "C-d": "\x04", "C-z": "\x1a" };
-	return Buffer.from(keys.map((key) => values[key] ?? key).join(""));
+function jobSettlement(job: NativeJob): BackgroundJobSettlement {
+	if (job.error) return { name: job.name, state: "failed", error: job.error };
+	const exitCode = job.result?.exitCode ?? 1;
+	return {
+		name: job.name,
+		state: exitCode === 0 ? "completed" : "exited",
+		exitCode,
+	};
 }

@@ -1,3 +1,5 @@
+import type { BackgroundJobSettlement } from "./native-background-jobs.ts";
+
 const MODEL_MAX_OUTPUT_BYTES = 50 * 1024;
 const MODEL_MAX_OUTPUT_LINES = 2000;
 
@@ -27,6 +29,46 @@ export function modelVisibleBackgroundJobOutput(action: string, output: string):
 	return `${notice}${separator}${tail}`;
 }
 
+export function backgroundKeyBytes(keys: readonly string[]): Buffer {
+	const values: Record<string, string> = {
+		Enter: "\n",
+		Tab: "\t",
+		BSpace: "\x7f",
+		Escape: "\x1b",
+		"C-c": "\x03",
+		"C-d": "\x04",
+		"C-z": "\x1a",
+	};
+	return Buffer.from(keys.map((key) => values[key] ?? key).join(""));
+}
+
 export function isValidBackgroundJobName(name: string): boolean {
 	return /^pi-[A-Za-z0-9._-]{1,60}$/.test(name);
+}
+
+interface BackgroundJobCompletionMessenger {
+	sendMessage(
+		message: {
+			customType: string;
+			content: string;
+			display: boolean;
+			details: BackgroundJobSettlement;
+		},
+		options: { triggerTurn: true; deliverAs: "steer" },
+	): void;
+}
+
+export function notifyBackgroundJobSettlement(
+	messenger: BackgroundJobCompletionMessenger,
+	settlement: BackgroundJobSettlement,
+): void {
+	const result = settlement.state === "failed"
+		? `failed: ${settlement.error ?? "unknown error"}`
+		: `${settlement.state} with exit code ${settlement.exitCode ?? 1}`;
+	messenger.sendMessage({
+		customType: "background-job-result",
+		content: `Background job ${settlement.name} ${result}. Inspect it with background_job status or read.`,
+		display: true,
+		details: settlement,
+	}, { triggerTurn: true, deliverAs: "steer" });
 }

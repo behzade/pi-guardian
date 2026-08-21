@@ -5,6 +5,7 @@
   mcpCli,
   nodejs,
   nono,
+  piCodingAgent ? null,
   stdenvNoCC,
 }:
 
@@ -32,6 +33,10 @@ stdenvNoCC.mkDerivation {
     done
     cp package.json package-lock.json $out/
     cp -R ${nodeModules}/node_modules "$out/"
+    ${lib.optionalString (piCodingAgent != null) ''
+      mkdir -p "$out/node_modules/@earendil-works"
+      ln -s ${piCodingAgent} "$out/node_modules/@earendil-works/pi-coding-agent"
+    ''}
     substituteInPlace $out/index.ts \
       --replace-fail '@NONO@' '${nono}' \
       --replace-fail '@BWRAP@' '${if bubblewrap == null then "" else lib.getExe bubblewrap}'

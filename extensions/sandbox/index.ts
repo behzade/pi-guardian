@@ -16,8 +16,10 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { NonoClient } from "./nono-client.ts";
 import {
+	backgroundKeyBytes,
 	isValidBackgroundJobName,
 	modelVisibleBackgroundJobOutput,
+	notifyBackgroundJobSettlement,
 } from "./background-jobs.ts";
 import { developmentCacheRoot } from "./development-caches.ts";
 import { ActiveAccessPolicy } from "./active-access-policy.ts";
@@ -51,7 +53,7 @@ import {
 	registerApprovalSession,
 	unregisterApprovalSession,
 } from "./approval-transport.ts";
-import { backgroundKeyBytes, NativeBackgroundJobs } from "./native-background-jobs.ts";
+import { NativeBackgroundJobs } from "./native-background-jobs.ts";
 import {
 	BackgroundJobParams,
 	BashParams,
@@ -124,9 +126,9 @@ export default function (pi: ExtensionAPI) {
 		name: "background_job",
 		label: "Background job",
 		description:
-			"Start, list, inspect, interact with, or stop a session-scoped long-running command. New jobs capture the active project and Pi-session rights at start; existing jobs keep their start policy.",
+			"Start, list, inspect, interact with, or stop a session-scoped long-running command. New jobs capture the active project and Pi-session rights at start; existing jobs keep their start policy. Job completion is delivered automatically.",
 		promptSnippet:
-			"Use background_job for long-running servers, watchers, builds, and tests. Use request_access separately if policy must change, then start a new job.",
+			"Use background_job for long-running servers, watchers, builds, and tests. Completion wakes the agent automatically; do not poll. Use request_access separately if policy must change, then start a new job.",
 		parameters: BackgroundJobParams,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -296,7 +298,13 @@ export default function (pi: ExtensionAPI) {
 			const client = await NonoClient.start(nonoPath, PACKAGED_BWRAP_PATH);
 			if (generation !== sessionGeneration) { await client.shutdown(); return; }
 			nonoClient = client;
-			backgroundJobs = new NativeBackgroundJobs(nonoPath, PACKAGED_BWRAP_PATH);
+			backgroundJobs = new NativeBackgroundJobs(
+				nonoPath,
+				PACKAGED_BWRAP_PATH,
+				(settlement) => {
+					if (generation === sessionGeneration) notifyBackgroundJobSettlement(pi, settlement);
+				},
+			);
 			sandboxState = { kind: "ready", config: accessPolicy.effective.config, machineConfig };
 			const backendLabel = `nono ${process.platform === "linux" ? "Landlock" : "Seatbelt"}`;
 			ctx.ui.setStatus("sandbox", ctx.ui.theme.fg("accent", `🔒 ${backendLabel}`));
