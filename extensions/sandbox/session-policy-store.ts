@@ -54,13 +54,14 @@ export function loadSessionPolicy(
 	globalConfig: NativeSandboxConfig,
 	configRoot = guardianConfigRoot(),
 ): ActiveProjectPolicy {
-	const expected = validateSessionIdentity(identity);
+	validateSessionId(identity.sessionId);
 	assertSafeStorage(configRoot, false);
-	const path = sessionPolicyPath(expected, configRoot);
+	const path = sessionPolicyPath(identity, configRoot);
 	const sourceText = readPolicySource(path);
 	if (sourceText === null) {
-		return activateProjectPolicy(EMPTY_PROJECT_POLICY, expected.cwd, globalConfig);
+		return activateProjectPolicy(EMPTY_PROJECT_POLICY, identity.cwd, globalConfig);
 	}
+	const expected = validateSessionIdentity(identity);
 	const record = normalizeRecord(JSON.parse(sourceText));
 	if (
 		record.sessionId !== expected.sessionId ||
@@ -107,9 +108,7 @@ export function saveSessionPolicy(
 }
 
 function validateSessionIdentity(identity: SessionPolicyIdentity): SessionPolicyIdentity {
-	if (identity.sessionId.length === 0 || identity.sessionId.length > 256) {
-		throw new Error("Pi session ID must be a non-empty string of at most 256 characters");
-	}
+	validateSessionId(identity.sessionId);
 	const lexicalFile = resolve(identity.sessionFile);
 	const metadata = lstatIfExists(lexicalFile);
 	if (!metadata || metadata.isSymbolicLink() || !metadata.isFile()) {
@@ -125,6 +124,12 @@ function validateSessionIdentity(identity: SessionPolicyIdentity): SessionPolicy
 		throw new Error("Pi session file header does not match the active working directory");
 	}
 	return { sessionId: identity.sessionId, sessionFile, cwd };
+}
+
+function validateSessionId(sessionId: string): void {
+	if (sessionId.length === 0 || sessionId.length > 256) {
+		throw new Error("Pi session ID must be a non-empty string of at most 256 characters");
+	}
 }
 
 function readSessionHeader(path: string): Record<string, unknown> {

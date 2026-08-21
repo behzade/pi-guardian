@@ -6,6 +6,7 @@ import {
 	rmSync,
 	statSync,
 	symlinkSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -60,6 +61,29 @@ test("session rights persist in a user-local sidecar bound to exact Pi session i
 	assert.throws(
 		() => loadSessionPolicy({ ...identity, sessionFile: copiedFile }, machine, root),
 		/identity does not match/,
+	);
+});
+
+test("a session without durable rights does not require an existing Pi session file", () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-session-policy-cwd-"));
+	const root = mkdtempSync(join(tmpdir(), "pi-session-policy-root-"));
+	const identity = {
+		sessionId: "new-session",
+		sessionFile: join(cwd, "not-created-yet.jsonl"),
+		cwd,
+	};
+	const active = loadSessionPolicy(identity, machine, root);
+	assert.deepEqual(active.policy, { version: 1, rights: [] });
+	assert.equal(active.sourceText, null);
+});
+
+test("existing durable rights still require a valid Pi session file", () => {
+	const { root, identity } = fixture();
+	saveSessionPolicy(identity, { version: 1, rights: [] }, null, root);
+	unlinkSync(identity.sessionFile);
+	assert.throws(
+		() => loadSessionPolicy(identity, machine, root),
+		/regular non-symlink Pi session file/,
 	);
 });
 
