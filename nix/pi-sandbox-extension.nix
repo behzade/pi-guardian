@@ -24,7 +24,13 @@ stdenvNoCC.mkDerivation {
   installPhase = ''
     runHook preInstall
     mkdir -p $out
-    cp background-jobs.ts sandbox-protocol.ts sandbox-policy.ts denial-summary.ts index.ts linux-deny-layer.ts native-background-jobs.ts network-policy.ts sandbox-config.ts development-caches.ts io-permissions.ts io-policy.ts native-sandbox-ops.ts nono-client.ts approval-transport.ts project-policy-store.ts project-policy.ts tool-schemas.ts package.json package-lock.json $out/
+    for sourceFile in *.ts; do
+      case "$sourceFile" in
+        *.test.ts | test-setup.ts) continue ;;
+      esac
+      cp "$sourceFile" "$out/"
+    done
+    cp package.json package-lock.json $out/
     cp -R ${nodeModules}/node_modules "$out/"
     substituteInPlace $out/index.ts \
       --replace-fail '@NONO@' '${nono}' \
