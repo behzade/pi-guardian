@@ -64,7 +64,6 @@ import {
 import {
 	activateProjectPolicy,
 	addProjectAccess,
-	intersectProjectPolicies,
 	EMPTY_PROJECT_POLICY,
 	loadProjectPolicy,
 	loadProjectPolicyForUpdate,
@@ -115,6 +114,7 @@ export default function (pi: ExtensionAPI) {
 	let backgroundJobs: NativeBackgroundJobs | undefined;
 	let userBashCounter = 0;
 	let sessionGeneration = 0;
+	let projectPolicyTrusted = false;
 	let approvalContext: ExtensionContext | undefined;
 
 	const revalidateProject = (
@@ -127,6 +127,24 @@ export default function (pi: ExtensionAPI) {
 			sandboxState.machineConfig,
 			project.sourceText,
 		);
+	};
+	const synchronizeProject = (): ActiveProjectPolicy => {
+		if (sandboxState.kind !== "ready") throw new Error("Sandbox is not ready");
+		if (!projectPolicyTrusted) return revalidateProject();
+		const diskProject = loadProjectPolicyForUpdate(
+			activeProjectCwd,
+			sandboxState.machineConfig,
+		);
+		const policyChanged = !sameProjectPolicy(
+			requireActiveProject(activeProject).policy,
+			diskProject.policy,
+		);
+		activeProject = diskProject;
+		sandboxState = { ...sandboxState, config: diskProject.config };
+		if (policyChanged) {
+			ensureDevelopmentCacheDirectories(diskProject.config.developmentCache);
+		}
+		return diskProject;
 	};
 	const networkHosts = (project: ActiveProjectPolicy = requireActiveProject(activeProject)) =>
 		runtimeNetworkHosts(project.config, project.networkHosts);
@@ -149,26 +167,9 @@ export default function (pi: ExtensionAPI) {
 			}
 			let diskProject: ActiveProjectPolicy;
 			try {
-				diskProject = loadProjectPolicyForUpdate(
-					ctx.cwd,
-					sandboxState.machineConfig,
-				);
+				diskProject = synchronizeProject();
 			} catch (error) {
 				return accessError(errorMessage(error), "invalid-policy");
-			}
-
-			// Apply valid removals immediately, but keep newly added disk rights
-			// inactive until they appear in the approval diff below.
-			const baseline = intersectProjectPolicies(activeProject.policy, diskProject.policy);
-			const reloadedReductions = !sameProjectPolicy(activeProject.policy, baseline);
-			if (reloadedReductions) {
-				activeProject = activateProjectPolicy(
-					baseline,
-					ctx.cwd,
-					sandboxState.machineConfig,
-					diskProject.sourceText,
-				);
-				sandboxState = { ...sandboxState, config: activeProject.config };
 			}
 
 			let candidate: ActiveProjectPolicy;
@@ -182,22 +183,15 @@ export default function (pi: ExtensionAPI) {
 			} catch (error) {
 				return accessError(errorMessage(error), "invalid-request");
 			}
-			const diskMatchesActive = sameProjectPolicy(diskProject.policy, activeProject.policy);
 			const candidateMatchesDisk = sameProjectPolicy(candidate.policy, diskProject.policy);
-			if (diskMatchesActive && candidateMatchesDisk) {
-				activeProject = activateProjectPolicy(
-					candidate.policy,
-					ctx.cwd,
-					sandboxState.machineConfig,
-					diskProject.sourceText,
-				);
+			if (candidateMatchesDisk) {
 				return {
-					content: [{ type: "text", text: `${reloadedReductions ? "Reloaded the less-permissive policy; all" : "All"} requested rights are active in ${projectPolicyPath(ctx.cwd)}. No command was retried.` }],
-					details: { granted: true, existing: true, reloaded: reloadedReductions, policyPath: projectPolicyPath(ctx.cwd), commandRetried: false },
+					content: [{ type: "text", text: `All requested rights are active in ${projectPolicyPath(ctx.cwd)}. No command was retried.` }],
+					details: { granted: true, existing: true, policyPath: projectPolicyPath(ctx.cwd), commandRetried: false },
 				};
 			}
 			const sourceSnapshot = diskProject.sourceText;
-			const diff = projectPolicyDiff(baseline, candidate.policy, ctx.cwd);
+			const diff = projectPolicyDiff(diskProject.policy, candidate.policy, ctx.cwd);
 			pi.events.emit("approval:requested", {
 				kind: "io-permission",
 				title: "Add rights to project sandbox policy",
@@ -280,7 +274,7 @@ export default function (pi: ExtensionAPI) {
 					const cwd = resolvePermissionPath(validated.cwd ?? ctx.cwd, ctx.cwd);
 					if (!isInside(canonicalize(ctx.cwd), cwd)) throw new Error("Background jobs must start inside the current workspace.");
 					if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`Background job directory does not exist: ${cwd}`);
-					const projectAtStart = revalidateProject();
+					const projectAtStart = synchronizeProject();
 					output = await backgroundJobs.start({
 						name: validated.name,
 						command: validated.command,
@@ -319,7 +313,7 @@ export default function (pi: ExtensionAPI) {
 			if (sandboxState.kind === "disabled") return localBash.execute(id, params, signal, onUpdate);
 			if (sandboxState.kind !== "ready") throw new Error(sandboxState.kind === "failed" ? sandboxState.reason : "Sandbox is still initializing; command blocked");
 			if (!nonoClient) throw new Error("Nono sandbox is not ready");
-			const projectAtStart = revalidateProject();
+			const projectAtStart = synchronizeProject();
 			const operations = createNativeSandboxOps(
 				nonoClient,
 				projectAtStart.config,
@@ -346,6 +340,7 @@ export default function (pi: ExtensionAPI) {
 		if (!lexicalPath) return { block: true, reason: "File path is missing" };
 		const path = canonicalize(lexicalPath);
 		const access = event.toolName === "write" || event.toolName === "edit" ? "write" : "read";
+		const synchronizedProject = synchronizeProject();
 		const config = activeConfig(sandboxState);
 		if (
 			isProtectedPath(lexicalPath) ||
@@ -361,7 +356,7 @@ export default function (pi: ExtensionAPI) {
 			return { block: true, reason: `Writes to a symlinked control folder cannot be granted: ${gitRoot}` };
 		}
 		const controlRoot = gitRoot;
-		const fileRights = revalidateProject().filesystem;
+		const fileRights = revalidateProject(synchronizedProject).filesystem;
 		const allowed = controlRoot
 			? fileRights.some((permission) =>
 				permission.kind === access && permission.directory && lexicalControlKey(permission.path) === lexicalControlKey(controlRoot))
@@ -382,7 +377,7 @@ export default function (pi: ExtensionAPI) {
 		if (sandboxState.kind === "ready") {
 			if (!nonoClient) return { operations: unavailableBashOps("Nono sandbox is not ready") };
 			try {
-				const projectAtStart = revalidateProject();
+				const projectAtStart = synchronizeProject();
 				return {
 					operations: createNativeSandboxOps(
 						nonoClient,
@@ -419,7 +414,8 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			activeProjectCwd = ctx.cwd;
-			activeProject = ctx.isProjectTrusted()
+			projectPolicyTrusted = ctx.isProjectTrusted();
+			activeProject = projectPolicyTrusted
 				? loadProjectPolicy(ctx.cwd, machineConfig)
 				: activateProjectPolicy(EMPTY_PROJECT_POLICY, ctx.cwd, machineConfig);
 			sandboxState = { kind: "initializing" };
@@ -453,6 +449,7 @@ export default function (pi: ExtensionAPI) {
 		if (client) await client.shutdown();
 		activeProject = undefined;
 		activeProjectCwd = localCwd;
+		projectPolicyTrusted = false;
 		userBashCounter = 0;
 		sandboxState = { kind: "initializing" };
 	});
@@ -462,6 +459,12 @@ export default function (pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			if (sandboxState.kind !== "ready") {
 				ctx.ui.notify(sandboxState.kind === "disabled" ? `Sandbox is ${sandboxState.reason}` : sandboxState.kind === "failed" ? sandboxState.reason : "Sandbox is initializing", sandboxState.kind === "failed" ? "error" : "info");
+				return;
+			}
+			try {
+				synchronizeProject();
+			} catch (error) {
+				ctx.ui.notify(`Sandbox policy could not be synchronized: ${errorMessage(error)}`, "error");
 				return;
 			}
 			ctx.ui.notify([

@@ -67,8 +67,8 @@ export function loadProjectPolicyForUpdate(
 	cwd: string,
 	globalConfig: NativeSandboxConfig,
 ): ActiveProjectPolicy {
-	// Approval compares this fresh snapshot with the active policy, while the
-	// conditional save below still rejects edits made during the prompt.
+	// Callers synchronize this fresh project snapshot before preparing an
+	// approval; the conditional save below still rejects edits made meanwhile.
 	return loadProjectPolicy(cwd, globalConfig);
 }
 
@@ -214,25 +214,6 @@ export function sameProjectPolicy(
 	return JSON.stringify(normalizeProjectPolicy(left)) === JSON.stringify(normalizeProjectPolicy(right));
 }
 
-export function intersectProjectPolicies(
-	left: ProjectSandboxPolicy,
-	right: ProjectSandboxPolicy,
-): ProjectSandboxPolicy {
-	const leftNormalized = normalizeProjectPolicy(left);
-	const rightNormalized = normalizeProjectPolicy(right);
-	const rightKeys = new Set(rightNormalized.rights.map(rightKey));
-	const rightEnvironment = rightNormalized.developmentCache?.environment ?? {};
-	const environment = Object.fromEntries(
-		Object.entries(leftNormalized.developmentCache?.environment ?? {})
-			.filter(([name, target]) => rightEnvironment[name] === target),
-	);
-	return normalizeProjectPolicy({
-		version: 1,
-		rights: leftNormalized.rights.filter((right) => rightKeys.has(rightKey(right))),
-		...(Object.keys(environment).length > 0 ? { developmentCache: { environment } } : {}),
-	});
-}
-
 /** Renders only bounded, semantic net-new entries that approval will add. */
 export function projectPolicyDiff(
 	before: ProjectSandboxPolicy,
@@ -256,7 +237,10 @@ export function projectPolicyDiff(
 	};
 	return [
 		`Project policy additions: ${projectPolicyPath(cwd)}`,
-		...JSON.stringify(additions, null, 2).split("\n").map((line) => `+ ${line}`),
+		"",
+		"```json",
+		JSON.stringify(additions, null, 2),
+		"```",
 	].join("\n");
 }
 

@@ -31,8 +31,9 @@ Project rights retain the version 1 schema:
 - exact loopback `network_endpoint` host/port rights;
 - managed development-cache environment mappings.
 
-Commands receive one immutable policy snapshot. Policy changes never retry a
-command automatically.
+Each agent synchronizes the checked-in project policy before starting a command,
+then gives that command one immutable policy snapshot. Policy changes never
+retry a command automatically.
 
 ## Enforcement
 

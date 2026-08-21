@@ -8,7 +8,6 @@ import { DEFAULT_CONFIG, mergeGlobalConfig, normalizeConfig } from "./sandbox-co
 import {
 	activateProjectPolicy,
 	addProjectAccess,
-	intersectProjectPolicies,
 	addProjectRights,
 	loadProjectPolicy,
 	loadProjectPolicyForUpdate,
@@ -259,42 +258,35 @@ test("request batches check only net-new sibling files and support cache adapter
 		kind: "development_cache", environment: { CARGO_HOME: "replacement" },
 	}], cwd, machine), /cannot replace managed (?:cache )?mapping CARGO_HOME/);
 	const diff = projectPolicyDiff(historical, active.policy, cwd);
+	assert.match(diff, /\n\n```json\n\{/);
 	assert.match(diff, /example\.com/);
 	assert.match(diff, /CUSTOM_BUILD_CACHE/);
+	assert.doesNotMatch(diff, /^\+ /m);
 	assert.doesNotMatch(diff, /history\/a/);
 });
 
-test("policy reconciliation activates removals without activating new disk rights", () => {
-	const active: ProjectSandboxPolicy = {
+test("a fresh project snapshot treats another agent's approved rights as existing", () => {
+	const cwd = workspace();
+	const firstAgent = loadProjectPolicy(cwd, machine);
+	assert.deepEqual(firstAgent.policy, basePolicy());
+	mkdirSync(join(homedir(), "shared"));
+
+	saveProjectPolicy(cwd, {
 		version: 1,
-		rights: [
-			{ kind: "network_endpoint", host: "localhost", port: 3000 },
-			{ kind: "network_host", host: "kept.example" },
-		],
-		developmentCache: { environment: { KEPT_CACHE: "kept", REMOVED_CACHE: "removed" } },
-	};
-	const disk: ProjectSandboxPolicy = {
-		version: 1,
-		rights: [
-			{ kind: "network_host", host: "kept.example" },
-			{ kind: "network_host", host: "new.example" },
-		],
-		developmentCache: { environment: { NEW_CACHE: "new", KEPT_CACHE: "kept" } },
-	};
-	assert.deepEqual(intersectProjectPolicies(active, disk), {
-		version: 1,
-		rights: [{ kind: "network_host", host: "kept.example" }],
-		developmentCache: { environment: { KEPT_CACHE: "kept" } },
+		rights: [{ kind: "filesystem", access: "read", path: "~/shared", scope: "tree" }],
 	});
+	const synchronized = loadProjectPolicyForUpdate(cwd, machine);
+	const candidate = addProjectAccess(synchronized.policy, [
+		{ kind: "filesystem", access: "write", path: ".git", scope: "tree" },
+	], cwd, machine);
+	const diff = projectPolicyDiff(synchronized.policy, candidate.policy, cwd);
+
+	assert.match(diff, /"path": "\.git"/);
+	assert.doesNotMatch(diff, /"path": "~\/shared"/);
 	assert.equal(sameProjectPolicy(
-		{ ...disk, developmentCache: { environment: { KEPT_CACHE: "kept", NEW_CACHE: "new" } } },
-		disk,
+		{ ...synchronized.policy, developmentCache: { environment: {} } },
+		synchronized.policy,
 	), true);
-	assert.equal(sameProjectPolicy(basePolicy(), {
-		version: 1,
-		rights: [],
-		developmentCache: { environment: {} },
-	}), true);
 });
 
 test("policy updates reload pre-approval edits but reject edits made during approval", () => {
