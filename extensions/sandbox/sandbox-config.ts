@@ -1,5 +1,4 @@
 import { isIP } from "node:net";
-import { dirname } from "node:path";
 import {
 	DEFAULT_DEVELOPMENT_CACHE_CONFIG,
 	developmentCacheEnvironment,
@@ -7,8 +6,6 @@ import {
 	normalizeDevelopmentCacheConfig,
 } from "./development-caches.ts";
 import { normalizeNetworkHost } from "./io-permissions.ts";
-
-const PACKAGED_MCP_CLI = "@PI_MCP_CLI@";
 
 export interface NativeSandboxNetworkConfig {
 	enabled?: boolean;
@@ -485,7 +482,6 @@ function matchesAny(name: string, patterns: readonly string[]): boolean {
 export function buildShellEnvironment(
 	config: NativeSandboxConfig,
 	source: NodeJS.ProcessEnv = process.env,
-	packagedMcpCli = PACKAGED_MCP_CLI,
 ): Record<string, string> {
 	const effectiveConfig = mergeGlobalConfig(DEFAULT_CONFIG, config);
 	const policy = effectiveConfig.shellEnvironment ?? {};
@@ -520,11 +516,5 @@ export function buildShellEnvironment(
 		environment,
 		developmentCacheEnvironment(effectiveConfig.developmentCache),
 	);
-	if (packagedMcpCli.length > 0 && !packagedMcpCli.startsWith("@")) {
-		environment.PATH = [dirname(packagedMcpCli), environment.PATH]
-			.filter(Boolean)
-			.join(":");
-	}
-
 	return environment;
 }

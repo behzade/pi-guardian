@@ -2,10 +2,8 @@
   bubblewrap ? null,
   importNpmLock,
   lib,
-  mcpCli,
   nodejs,
   nono,
-  piCodingAgent ? null,
   stdenvNoCC,
 }:
 
@@ -34,15 +32,9 @@ stdenvNoCC.mkDerivation {
     cp package.json package-lock.json $out/
     cp -R ${nodeModules}/node_modules "$out/"
     chmod -R u+w "$out/node_modules"
-    ${lib.optionalString (piCodingAgent != null) ''
-      mkdir -p "$out/node_modules/@earendil-works"
-      ln -s ${piCodingAgent} "$out/node_modules/@earendil-works/pi-coding-agent"
-    ''}
     substituteInPlace $out/index.ts \
       --replace-fail '@NONO@' '${nono}' \
       --replace-fail '@BWRAP@' '${if bubblewrap == null then "" else lib.getExe bubblewrap}'
-    substituteInPlace $out/sandbox-config.ts \
-      --replace-fail '@PI_MCP_CLI@' '${mcpCli}/bin/mcp-cli'
     runHook postInstall
   '';
 

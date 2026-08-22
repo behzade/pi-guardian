@@ -75,7 +75,6 @@ test("shell environment preserves the active development shell and removes secre
 			DATABASE_PASSWORD: "secret",
 			UNRELATED: "drop",
 		},
-		"",
 	);
 	assert.equal(environment.PATH, "/bin");
 	assert.equal(environment.HOME, "/home/test");

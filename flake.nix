@@ -18,9 +18,7 @@
         system:
         let
           pkgs = import nixpkgs { inherit system; };
-          mcpCli = pkgs.callPackage ./nix/pi-mcp-cli.nix { };
           guardian = pkgs.callPackage ./nix/pi-sandbox-extension.nix {
-            inherit mcpCli;
             nono = pkgs.nono;
             bubblewrap = if pkgs.stdenv.hostPlatform.isLinux then pkgs.bubblewrap else null;
           };
@@ -35,20 +33,33 @@
         system:
         let
           pkgs = import nixpkgs { inherit system; };
-          mcpCli = pkgs.callPackage ./nix/pi-mcp-cli.nix { };
-          piCodingAgent = pkgs.runCommand "pi-coding-agent-test-fixture" { } ''
-            mkdir -p "$out"
-          '';
-          guardianWithPi = pkgs.callPackage ./nix/pi-sandbox-extension.nix {
-            inherit mcpCli piCodingAgent;
-            nono = pkgs.nono;
-            bubblewrap = if pkgs.stdenv.hostPlatform.isLinux then pkgs.bubblewrap else null;
-          };
         in
         {
           guardian = self.packages.${system}.guardian;
-          guardian-peer-wiring = pkgs.runCommand "pi-guardian-peer-wiring-test" { } ''
-            test "$(readlink ${guardianWithPi}/node_modules/@earendil-works/pi-coding-agent)" = ${piCodingAgent}
+          guardian-tests = pkgs.runCommand "pi-guardian-tests" {
+            nativeBuildInputs = [ pkgs.nodejs ];
+          } ''
+            cp ${self}/extensions/sandbox/*.ts .
+            cp ${self}/extensions/sandbox/package-lock.test.mjs .
+            cp ${self}/extensions/sandbox/package-lock.json .
+            cp -R ${self.packages.${system}.guardian}/node_modules .
+            chmod -R u+w node_modules
+            node --test package-lock.test.mjs
+            node --import ./test-setup.ts --test \
+              approval-transport.test.ts \
+              background-jobs.test.ts \
+              development-caches.test.ts \
+              io-permissions.test.ts \
+              io-policy.test.ts \
+              linux-deny-layer.test.ts \
+              native-sandbox-ops.test.ts \
+              network-policy.test.ts \
+              nono-client.test.ts \
+              project-policy.test.ts \
+              sandbox-config.test.ts \
+              sandbox-policy.test.ts \
+              session-policy-store.test.ts \
+              tool-schemas.test.ts
             touch "$out"
           '';
         }
