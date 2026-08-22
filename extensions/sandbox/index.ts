@@ -65,9 +65,8 @@ import {
 	type ProjectAccessRight,
 } from "./project-policy.ts";
 import { sessionPolicyPath } from "./session-policy-store.ts";
-
-const PACKAGED_NONO_PATH = "@NONO@/bin/nono";
-const PACKAGED_BWRAP_PATH = "@BWRAP@";
+import { resolvePackagedExecutables } from "./packaged-executables.ts";
+import { FIXED_BWRAP_PATH, FIXED_NONO_PATH } from "./fixed-executables.ts";
 
 function readGlobalConfig(): NativeSandboxConfig {
 	const path = resolve(homedir(), ".config", "guardian", "sandbox.json");
@@ -294,13 +293,14 @@ export default function (pi: ExtensionAPI) {
 			);
 			sandboxState = { kind: "initializing" };
 			if (process.platform !== "darwin" && process.platform !== "linux") throw new Error("the native sandbox supports macOS and Linux only");
-			const nonoPath = machineConfig.nonoPath ?? PACKAGED_NONO_PATH;
-			const client = await NonoClient.start(nonoPath, PACKAGED_BWRAP_PATH);
+			const packagedExecutables = fixedPackagedExecutables();
+			const nonoPath = packagedExecutables.nonoPath;
+			const client = await NonoClient.start(nonoPath, packagedExecutables.bwrapPath);
 			if (generation !== sessionGeneration) { await client.shutdown(); return; }
 			nonoClient = client;
 			backgroundJobs = new NativeBackgroundJobs(
 				nonoPath,
-				PACKAGED_BWRAP_PATH,
+				packagedExecutables.bwrapPath,
 				(settlement) => {
 					if (generation === sessionGeneration) notifyBackgroundJobSettlement(pi, settlement);
 				},
@@ -358,6 +358,13 @@ export default function (pi: ExtensionAPI) {
 			].join("\n"), "info");
 		},
 	});
+}
+
+function fixedPackagedExecutables(): { nonoPath: string; bwrapPath: string } {
+	if (FIXED_NONO_PATH !== null && FIXED_BWRAP_PATH !== null) {
+		return { nonoPath: FIXED_NONO_PATH, bwrapPath: FIXED_BWRAP_PATH };
+	}
+	return resolvePackagedExecutables();
 }
 
 function requireReadyState(state: SandboxState): Extract<SandboxState, { kind: "ready" }> {

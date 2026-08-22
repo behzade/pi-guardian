@@ -35,7 +35,6 @@ export interface NativeSandboxShellEnvironmentConfig {
 export interface NativeSandboxConfig {
 	enabled?: boolean;
 	backend?: "nono";
-	nonoPath?: string;
 	developmentCache?: DevelopmentCacheConfig;
 	network?: NativeSandboxNetworkConfig;
 	filesystem?: NativeSandboxFilesystemConfig;
@@ -244,7 +243,6 @@ export function normalizeConfig(value: unknown): NativeSandboxConfig {
 		[
 			"enabled",
 			"backend",
-			"nonoPath",
 			"developmentCache",
 			"network",
 			"filesystem",
@@ -254,20 +252,12 @@ export function normalizeConfig(value: unknown): NativeSandboxConfig {
 	);
 	const enabled = input.enabled;
 	const backend = input.backend;
-	const nonoPath = input.nonoPath;
 	if (enabled !== undefined && typeof enabled !== "boolean") {
 		throw new Error("enabled must be a boolean");
 	}
 	if (backend !== undefined && backend !== "nono") {
 		throw new Error("backend must be nono");
 	}
-	if (
-		nonoPath !== undefined &&
-		(typeof nonoPath !== "string" || !nonoPath.startsWith("/"))
-	) {
-		throw new Error("nonoPath must be an absolute path");
-	}
-
 	const networkInput =
 		input.network === undefined
 			? undefined
@@ -348,7 +338,6 @@ export function normalizeConfig(value: unknown): NativeSandboxConfig {
 	return {
 		enabled: enabled as boolean | undefined,
 		backend: backend as "nono" | undefined,
-		nonoPath: nonoPath as string | undefined,
 		developmentCache: normalizeDevelopmentCacheConfig(input.developmentCache),
 		network: networkInput
 			? {

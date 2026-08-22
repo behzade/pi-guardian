@@ -1,0 +1,113 @@
+name: npm packages
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/npm-packages.yml"
+      - "extensions/sandbox/**"
+      - "packaging/npm/**"
+
+permissions:
+  contents: read
+
+jobs:
+  main:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.19.0
+      - run: |
+          node packaging/npm/build-packages.mjs main --out "$PWD/dist/npm"
+          mkdir -p dist/tarballs
+          npm pack ./dist/npm/pi-extension-sandbox --pack-destination dist/tarballs
+          tar -tf dist/tarballs/*.tgz | tee dist/main-contents.txt
+          ! grep -E '(\.test\.ts|test-setup\.ts|package-lock\.json)$' dist/main-contents.txt
+          grep -F 'package/README.md' dist/main-contents.txt
+          grep -F 'package/LICENSE' dist/main-contents.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: guardian-main-npm
+          path: dist/tarballs/*.tgz
+
+  darwin-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.19.0
+      - run: |
+          mkdir -p dist/download dist/extract dist/tarballs
+          curl -fsSLo dist/download/nono.tar.gz https://github.com/nolabs-ai/nono/releases/download/v0.61.1/nono-v0.61.1-aarch64-apple-darwin.tar.gz
+          echo '922d0d4f86720b34d1d1e8a0f141c7a883d98ac20749869545ecd3412a07a1f9  dist/download/nono.tar.gz' | shasum -a 256 -c
+          tar -xzf dist/download/nono.tar.gz -C dist/extract
+          nono=$(find "$PWD/dist/extract" -type f -name nono -perm -111 -print -quit)
+          test -n "$nono"
+          curl -fsSLo dist/download/NONO-LICENSE https://raw.githubusercontent.com/nolabs-ai/nono/v0.61.1/LICENSE
+          node packaging/npm/build-packages.mjs native \
+            --platform darwin --arch arm64 --out "$PWD/dist/npm" \
+            --nono "$nono" --nono-license "$PWD/dist/download/NONO-LICENSE"
+          node packaging/npm/build-packages.mjs main --out "$PWD/dist/npm"
+          npm pack ./dist/npm/pi-extension-sandbox-darwin-arm64 --pack-destination dist/tarballs
+          npm pack ./dist/npm/pi-extension-sandbox --pack-destination dist/tarballs
+          mkdir dist/install
+          cd dist/install
+          npm init -y
+          npm install --ignore-scripts --legacy-peer-deps \
+            ../tarballs/pi-extension-sandbox-darwin-arm64-3.0.0.tgz \
+            ../tarballs/pi-extension-sandbox-3.0.0.tgz \
+            @earendil-works/pi-coding-agent@0.84.2
+          mkdir home
+          HOME="$PWD/home" PI_OFFLINE=1 ./node_modules/.bin/pi --no-extensions \
+            -e "$PWD/node_modules/pi-extension-sandbox/index.ts" --list-models >/dev/null
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: guardian-darwin-arm64-npm
+          path: dist/tarballs/*.tgz
+
+  linux-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.19.0
+      - run: |
+          mkdir -p dist/download dist/extract dist/bin dist/tarballs
+          curl -fsSLo dist/download/nono.tar.gz https://github.com/nolabs-ai/nono/releases/download/v0.61.1/nono-v0.61.1-x86_64-unknown-linux-gnu.tar.gz
+          echo '9186323e1deda74bda886ab57ae3cff820bc85861a9dd691b898a4d309bffa93  dist/download/nono.tar.gz' | sha256sum -c
+          tar -xzf dist/download/nono.tar.gz -C dist/extract
+          nono=$(find "$PWD/dist/extract" -type f -name nono -perm -111 -print -quit)
+          test -n "$nono"
+          curl -fsSLo dist/download/bubblewrap.tar.xz https://github.com/containers/bubblewrap/releases/download/v0.11.2/bubblewrap-0.11.2.tar.xz
+          curl -fsSLo dist/download/NONO-LICENSE https://raw.githubusercontent.com/nolabs-ai/nono/v0.61.1/LICENSE
+          curl -fsSLo dist/download/BUBBLEWRAP-COPYING https://raw.githubusercontent.com/containers/bubblewrap/v0.11.2/COPYING
+          docker run --rm -v "$PWD:/work" -w /work alpine:3.22 sh -c '
+            apk add --no-cache bash build-base libcap-dev libcap-static linux-headers meson ninja pkgconf tar xz &&
+            packaging/npm/build-static-bwrap.sh /work/dist/download/bubblewrap.tar.xz /work/dist/bin/bwrap
+          '
+          dist/bin/bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev -- /bin/true
+          node packaging/npm/build-packages.mjs native \
+            --platform linux --arch x64 --out "$PWD/dist/npm" \
+            --nono "$nono" --nono-license "$PWD/dist/download/NONO-LICENSE" \
+            --bwrap "$PWD/dist/bin/bwrap" --bwrap-license "$PWD/dist/download/BUBBLEWRAP-COPYING"
+          node packaging/npm/build-packages.mjs main --out "$PWD/dist/npm"
+          npm pack ./dist/npm/pi-extension-sandbox-linux-x64 --pack-destination dist/tarballs
+          npm pack ./dist/npm/pi-extension-sandbox --pack-destination dist/tarballs
+          mkdir dist/install
+          cd dist/install
+          npm init -y
+          npm install --ignore-scripts --legacy-peer-deps \
+            ../tarballs/pi-extension-sandbox-linux-x64-3.0.0.tgz \
+            ../tarballs/pi-extension-sandbox-3.0.0.tgz \
+            @earendil-works/pi-coding-agent@0.84.2
+          mkdir home
+          HOME="$PWD/home" PI_OFFLINE=1 ./node_modules/.bin/pi --no-extensions \
+            -e "$PWD/node_modules/pi-extension-sandbox/index.ts" --list-models >/dev/null
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: guardian-linux-x64-npm
+          path: dist/tarballs/*.tgz

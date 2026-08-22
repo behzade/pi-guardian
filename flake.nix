@@ -44,7 +44,7 @@
             cp ${self}/extensions/sandbox/package-lock.json .
             cp -R ${self.packages.${system}.guardian}/node_modules .
             chmod -R u+w node_modules
-            node --test package-lock.test.mjs
+            node --test package-lock.test.mjs ${self}/packaging/npm/build-packages.test.mjs
             node --import ./test-setup.ts --test \
               approval-transport.test.ts \
               background-jobs.test.ts \
@@ -55,6 +55,7 @@
               native-sandbox-ops.test.ts \
               network-policy.test.ts \
               nono-client.test.ts \
+              packaged-executables.test.ts \
               project-policy.test.ts \
               sandbox-config.test.ts \
               sandbox-policy.test.ts \

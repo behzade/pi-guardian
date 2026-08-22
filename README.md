@@ -11,6 +11,18 @@ nono applies the OS sandbox:
 The previous custom broker and root filesystem scanner are no longer packaged
 or used.
 
+## Distribution
+
+The flake package carries fixed Nix-store executables. npm releases use one
+TypeScript package plus an exact-version native package for macOS ARM64 or Linux
+x86-64; they have no install scripts and never resolve nono or Bubblewrap through
+`PATH`. See [`packaging/npm`](packaging/npm/README.md) for the reviewed build and
+release gate.
+
+nono remains alpha upstream and its security policy does not recommend production
+use before 1.0. Guardian npm releases must therefore use the `next` dist-tag while
+that condition remains.
+
 ## Policy
 
 Machine policy is read from `~/.config/guardian/sandbox.json`. The Pi adapter

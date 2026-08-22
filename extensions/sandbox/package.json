@@ -2,11 +2,32 @@
 	"name": "pi-extension-sandbox",
 	"private": true,
 	"version": "3.0.0",
+	"description": "Fail-closed native sandbox and approval policy for the Pi coding agent",
 	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/behzade/pi-guardian.git",
+		"directory": "extensions/sandbox"
+	},
+	"bugs": "https://github.com/behzade/pi-guardian/issues",
+	"homepage": "https://github.com/behzade/pi-guardian#readme",
+	"keywords": ["pi-package", "pi-extension", "sandbox", "nono"],
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"os": ["darwin", "linux"],
+	"files": [
+		"*.ts",
+		"!*.test.ts",
+		"!test-setup.ts",
+		"README.md",
+		"LICENSE"
+	],
 	"scripts": {
 		"clean": "echo 'nothing to clean'",
 		"build": "echo 'nothing to build'",
-		"check": "node --test package-lock.test.mjs && node --import ./test-setup.ts --test background-jobs.test.ts sandbox-policy.test.ts linux-deny-layer.test.ts nono-client.test.ts network-policy.test.ts sandbox-config.test.ts development-caches.test.ts tool-schemas.test.ts extension-schema.test.ts io-permissions.test.ts io-policy.test.ts native-sandbox-ops.test.ts project-policy.test.ts session-policy-store.test.ts approval-transport.test.ts"
+		"check": "node --test package-lock.test.mjs ../../packaging/npm/build-packages.test.mjs && node --import ./test-setup.ts --test background-jobs.test.ts sandbox-policy.test.ts linux-deny-layer.test.ts nono-client.test.ts network-policy.test.ts sandbox-config.test.ts development-caches.test.ts packaged-executables.test.ts tool-schemas.test.ts extension-schema.test.ts io-permissions.test.ts io-policy.test.ts native-sandbox-ops.test.ts project-policy.test.ts session-policy-store.test.ts approval-transport.test.ts"
 	},
 	"pi": {
 		"extensions": [
@@ -14,11 +35,14 @@
 		]
 	},
 	"dependencies": {
-		"effect": "4.0.0-beta.107",
+		"effect": "4.0.0-beta.107"
+	},
+	"devDependencies": {
 		"typebox": "1.3.7"
 	},
 	"peerDependencies": {
-		"@earendil-works/pi-coding-agent": "0.84.2"
+		"@earendil-works/pi-coding-agent": "*",
+		"typebox": "*"
 	},
 	"peerDependenciesMeta": {
 		"@earendil-works/pi-coding-agent": {

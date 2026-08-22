@@ -92,7 +92,7 @@ test("shell environment preserves the active development shell and removes secre
 test("rejects malformed config instead of weakening policy", () => {
 	assert.throws(() => normalizeConfig(null), /JSON object/);
 	assert.throws(() => normalizeConfig({ enabled: "yes" }), /enabled/);
-	assert.throws(() => normalizeConfig({ nonoPath: "relative" }), /absolute/);
+	assert.throws(() => normalizeConfig({ nonoPath: "/custom/nono" }), /unknown fields/);
 	assert.throws(() => normalizeConfig({ network: { enabled: "yes" } }), /network.enabled/);
 	assert.throws(() => normalizeConfig({ network: { allowAllUnixSockets: "yes" } }), /boolean/);
 	assert.throws(() => normalizeConfig({ shellEnvironment: { inherit: "some" } }), /inherit/);
