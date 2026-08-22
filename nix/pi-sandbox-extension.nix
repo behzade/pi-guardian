@@ -1,5 +1,6 @@
 {
   importNpmLock,
+  lib,
   nodejs,
   nono,
   stdenvNoCC,
