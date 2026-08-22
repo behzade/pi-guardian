@@ -67,7 +67,7 @@ export function resolvePackagedExecutables(
 	const root = dirname(manifestPath);
 	return {
 		nonoPath: verifiedExecutable(root, selected.nonoPath, manifest.guardian?.nono?.sha256),
-		bwrapPath: platform === "linux" ? resolveBubblewrapPath(pathValue) : "",
+		bwrapPath: resolveSystemBubblewrap(platform, pathValue),
 		packageName: selected.name,
 	};
 }
@@ -115,7 +115,11 @@ function verifiedExecutable(root: string, relativePath: string, expectedSha256: 
 	return path;
 }
 
-function resolveBubblewrapPath(pathValue: string | undefined): string {
+export function resolveSystemBubblewrap(
+	platform = process.platform,
+	pathValue = process.env.PATH,
+): string {
+	if (platform !== "linux") return "";
 	for (const directory of pathValue?.split(delimiter) ?? []) {
 		if (!isAbsolute(directory)) continue;
 		const candidate = join(directory, "bwrap");

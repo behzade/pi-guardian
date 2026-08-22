@@ -20,7 +20,6 @@
           pkgs = import nixpkgs { inherit system; };
           guardian = pkgs.callPackage ./nix/pi-sandbox-extension.nix {
             nono = pkgs.nono;
-            bubblewrap = if pkgs.stdenv.hostPlatform.isLinux then pkgs.bubblewrap else null;
           };
         in
         {

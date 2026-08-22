@@ -13,7 +13,7 @@ or used.
 
 ## Distribution
 
-The flake package carries fixed Nix-store executables. npm releases use one
+The flake package carries a fixed Nix-store nono executable. npm releases use one
 TypeScript package plus an exact-version nono package for macOS ARM64 or Linux
 x86-64; they have no install scripts and never resolve nono through `PATH`.
 Linux npm installations require OS-provided Bubblewrap on `PATH` and fail closed
@@ -81,9 +81,8 @@ their static non-root directories and mounts existing denied paths inaccessible
 or read-only before launching nono. It does not scan `/` or follow directory
 symlinks. Nono still owns all grants and network enforcement.
 
-Nix installations use fixed nono and Bubblewrap executables. npm installations
-use fixed packaged nono and resolve OS-provided Bubblewrap through `PATH` on
-Linux.
+Nix installations use fixed nono, while npm installations use fixed packaged
+nono. Both resolve OS-provided Bubblewrap through `PATH` on Linux.
 
 ## Checks
 

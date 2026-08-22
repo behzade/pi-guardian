@@ -17,14 +17,16 @@ pi install npm:pi-extension-sandbox@3.0.0
 The npm release supports:
 
 - macOS on Apple Silicon;
-- Linux x86-64 with unprivileged user namespaces enabled.
+- Linux x86-64 with unprivileged user namespaces enabled and OS-provided
+  Bubblewrap available as `bwrap` on `PATH`.
 
-Guardian installs no lifecycle scripts and never resolves nono or Bubblewrap
-through `PATH`. The main package selects an exact-version native npm package and
-fails closed when that package or executable is unavailable.
+Guardian installs no lifecycle scripts and never resolves nono through `PATH`.
+The main package selects an exact-version native npm package. Linux startup
+fails closed when `bwrap` is unavailable on `PATH`.
 
 For Nix installations, use the repository's flake package instead. It keeps the
-same policy adapter while substituting fixed Nix-store executables.
+same policy adapter while substituting a fixed Nix-store nono executable and
+using the same OS-provided Bubblewrap lookup.
 
 ## Policy and checks
 

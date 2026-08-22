@@ -65,8 +65,11 @@ import {
 	type ProjectAccessRight,
 } from "./project-policy.ts";
 import { sessionPolicyPath } from "./session-policy-store.ts";
-import { resolvePackagedExecutables } from "./packaged-executables.ts";
-import { FIXED_BWRAP_PATH, FIXED_NONO_PATH } from "./fixed-executables.ts";
+import {
+	resolvePackagedExecutables,
+	resolveSystemBubblewrap,
+} from "./packaged-executables.ts";
+import { FIXED_NONO_PATH } from "./fixed-executables.ts";
 
 function readGlobalConfig(): NativeSandboxConfig {
 	const path = resolve(homedir(), ".config", "guardian", "sandbox.json");
@@ -361,8 +364,8 @@ export default function (pi: ExtensionAPI) {
 }
 
 function fixedPackagedExecutables(): { nonoPath: string; bwrapPath: string } {
-	if (FIXED_NONO_PATH !== null && FIXED_BWRAP_PATH !== null) {
-		return { nonoPath: FIXED_NONO_PATH, bwrapPath: FIXED_BWRAP_PATH };
+	if (FIXED_NONO_PATH !== null) {
+		return { nonoPath: FIXED_NONO_PATH, bwrapPath: resolveSystemBubblewrap() };
 	}
 	return resolvePackagedExecutables();
 }
