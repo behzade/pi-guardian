@@ -14,5 +14,5 @@ Run the narrowest relevant check first. For adapter changes use
 nono is security-critical and currently alpha upstream. Keep it pinned through
 the flake's nixpkgs revision. Review upstream security and release notes before
 updating. Production code must use fixed packaged executables and must never
-resolve nono or Bubblewrap through `PATH`. The Linux deny layer may scan only
+resolve nono through `PATH`. The Linux deny layer may scan only
 static non-root glob directories and must not follow directory symlinks.
