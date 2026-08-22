@@ -3,12 +3,6 @@
   "rights": [
     {
       "kind": "filesystem",
-      "access": "read",
-      "path": "~/Projects/personal/codex-upstream",
-      "scope": "tree"
-    },
-    {
-      "kind": "filesystem",
       "access": "write",
       "path": ".git",
       "scope": "tree"
