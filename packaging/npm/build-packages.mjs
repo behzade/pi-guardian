@@ -79,11 +79,9 @@ function buildNative(options) {
 	const bwrapLicense = selected.requiresBwrap
 		? verifiedFile(requiredAbsolute(options, "bwrap-license"), "Bubblewrap license")
 		: undefined;
+	verifyPortableLinkage(nono.path, selected.os);
 	if (bwrap && containsAny(bwrap.bytes, ["ld-linux", "ld-musl", "/nix/store"])) {
 		fail("Bubblewrap npm binary must be static and must not reference the Nix store");
-	}
-	for (const binary of [nono, bwrap].filter(Boolean)) {
-		if (containsAny(binary.bytes, ["/nix/store"])) fail(`${binary.name} references the Nix store`);
 	}
 
 	const output = resetPackageDirectory(outputRoot, selected.name);
@@ -133,6 +131,24 @@ function verifiedBinary(path, name, version, format) {
 		fail(`${name} must report version ${version}; got ${JSON.stringify(output)}`);
 	}
 	return { name, path: realPath, bytes, sha256: sha256(bytes) };
+}
+
+function verifyPortableLinkage(path, platform) {
+	const tool = platform === "darwin" ? "/usr/bin/otool" : "/usr/bin/ldd";
+	let output;
+	try {
+		output = execFileSync(tool, platform === "darwin" ? ["-L", path] : [path], {
+			encoding: "utf8",
+			timeout: 10_000,
+		});
+	} catch (error) {
+		fail(`cannot inspect nono runtime linkage with ${tool}: ${error instanceof Error ? error.message : error}`);
+	}
+	if (/\/nix\/store|not found/i.test(output)) fail(`nono has non-portable runtime linkage:\n${output}`);
+	const dependencyPaths = output.match(/\/(?:System|usr|lib|opt|nix)[^\s(]*/g) ?? [];
+	const allowed = platform === "darwin" ? /^(?:\/usr\/lib|\/System\/Library)\// : /^(?:\/lib|\/usr\/lib)/;
+	const unsupported = dependencyPaths.filter((dependency) => !allowed.test(dependency));
+	if (unsupported.length > 0) fail(`nono has unsupported runtime dependencies: ${unsupported.join(", ")}`);
 }
 
 function assertBinaryFormat(bytes, format, name) {

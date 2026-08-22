@@ -21,7 +21,7 @@ trap 'rm -rf "$build_root"' EXIT
 tar -xJf "$archive" -C "$build_root"
 source_root="$build_root/bubblewrap-0.11.2"
 
-CFLAGS="${CFLAGS:-} -static" LDFLAGS="${LDFLAGS:-} -static" \
+CFLAGS="${CFLAGS:-} -static -Wno-error=format-overflow" LDFLAGS="${LDFLAGS:-} -static" \
   meson setup "$build_root/build" "$source_root" \
     --buildtype=release \
     -Ddefault_library=static \

@@ -12,8 +12,9 @@ Supported targets:
 | `pi-extension-sandbox-linux-x64` | nono 0.61.1, static non-setuid Bubblewrap 0.11.2 |
 
 The build accepts only explicit absolute input paths. It checks executable
-versions and architectures, rejects symlinks and Nix-store references, and
-requires Linux Bubblewrap to have no dynamic-loader reference. It never searches
+versions, architectures, checksums, and runtime linkage; rejects symlinks and
+Nix-store runtime dependencies; and requires Linux Bubblewrap to have no
+dynamic-loader reference. It never searches
 `PATH` for a runtime executable.
 
 ## Stage packages
