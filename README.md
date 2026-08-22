@@ -4,8 +4,8 @@ Guardian is a Pi policy adapter backed by [nono](https://github.com/nolabs-ai/no
 It keeps explicit project approvals and exact filesystem/network rights while
 nono applies the OS sandbox:
 
-- Linux: Landlock, nono's supervised network proxy, and a fixed Bubblewrap
-  mount layer only for deny-over-allow rules Landlock cannot represent;
+- Linux: Landlock, nono's supervised network proxy, and a Bubblewrap mount
+  layer only for deny-over-allow rules Landlock cannot represent;
 - macOS: Seatbelt and nono's supervised network proxy.
 
 The previous custom broker and root filesystem scanner are no longer packaged
@@ -14,10 +14,11 @@ or used.
 ## Distribution
 
 The flake package carries fixed Nix-store executables. npm releases use one
-TypeScript package plus an exact-version native package for macOS ARM64 or Linux
-x86-64; they have no install scripts and never resolve nono or Bubblewrap through
-`PATH`. See [`packaging/npm`](packaging/npm/README.md) for the reviewed build and
-release gate.
+TypeScript package plus an exact-version nono package for macOS ARM64 or Linux
+x86-64; they have no install scripts and never resolve nono through `PATH`.
+Linux npm installations require OS-provided Bubblewrap on `PATH` and fail closed
+at startup when it is missing. See [`packaging/npm`](packaging/npm/README.md) for
+the reviewed build and release gate.
 
 nono remains alpha upstream and its security policy does not recommend production
 use before 1.0. Guardian npm releases must therefore use the `next` dist-tag while
@@ -80,8 +81,9 @@ their static non-root directories and mounts existing denied paths inaccessible
 or read-only before launching nono. It does not scan `/` or follow directory
 symlinks. Nono still owns all grants and network enforcement.
 
-The packaged extension uses fixed nono and Bubblewrap executables supplied by
-Nix; it does not search `PATH` for either executable.
+Nix installations use fixed nono and Bubblewrap executables. npm installations
+use fixed packaged nono and resolve OS-provided Bubblewrap through `PATH` on
+Linux.
 
 ## Checks
 

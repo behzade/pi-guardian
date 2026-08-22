@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { accessSync, constants, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative } from "node:path";
 
 const NATIVE_VERSION = "3.0.0";
 const require = createRequire(import.meta.url);
@@ -9,19 +9,16 @@ const require = createRequire(import.meta.url);
 interface NativePackage {
 	name: string;
 	nonoPath: string;
-	bwrapPath: string;
 }
 
 const NATIVE_PACKAGES: Record<string, NativePackage> = {
 	"darwin:arm64": {
 		name: "pi-extension-sandbox-darwin-arm64",
 		nonoPath: "bin/nono",
-		bwrapPath: "",
 	},
 	"linux:x64": {
 		name: "pi-extension-sandbox-linux-x64",
 		nonoPath: "bin/nono",
-		bwrapPath: "bin/bwrap",
 	},
 };
 
@@ -33,11 +30,12 @@ export interface PackagedExecutables {
 	packageName: string;
 }
 
-/** Resolves only fixed files from the exact platform package; never searches PATH. */
+/** Resolves fixed nono from the platform package and Linux Bubblewrap from PATH. */
 export function resolvePackagedExecutables(
 	platform = process.platform,
 	arch = process.arch,
 	resolveManifest: ResolveManifest = (specifier) => require.resolve(specifier),
+	pathValue = process.env.PATH,
 ): PackagedExecutables {
 	const selected = NATIVE_PACKAGES[`${platform}:${arch}`];
 	if (!selected) {
@@ -62,17 +60,14 @@ export function resolvePackagedExecutables(
 	if (
 		!arrayField(manifest.os).includes(platform) ||
 		!arrayField(manifest.cpu).includes(arch) ||
-		manifest.guardian?.nono?.path !== selected.nonoPath ||
-		(selected.bwrapPath !== "" && manifest.guardian?.bubblewrap?.path !== selected.bwrapPath)
+		manifest.guardian?.nono?.path !== selected.nonoPath
 	) {
 		throw new Error(`Guardian native package ${selected.name} has invalid platform or executable metadata`);
 	}
 	const root = dirname(manifestPath);
 	return {
 		nonoPath: verifiedExecutable(root, selected.nonoPath, manifest.guardian?.nono?.sha256),
-		bwrapPath: selected.bwrapPath
-			? verifiedExecutable(root, selected.bwrapPath, manifest.guardian?.bubblewrap?.sha256)
-			: "",
+		bwrapPath: platform === "linux" ? resolveBubblewrapPath(pathValue) : "",
 		packageName: selected.name,
 	};
 }
@@ -84,7 +79,6 @@ interface NativeManifest extends Record<string, unknown> {
 	cpu?: unknown;
 	guardian?: {
 		nono?: { path?: unknown; sha256?: unknown };
-		bubblewrap?: { path?: unknown; sha256?: unknown };
 	};
 }
 
@@ -119,6 +113,21 @@ function verifiedExecutable(root: string, relativePath: string, expectedSha256: 
 		throw new Error(`Guardian native executable checksum mismatch: ${lexicalPath}`);
 	}
 	return path;
+}
+
+function resolveBubblewrapPath(pathValue: string | undefined): string {
+	for (const directory of pathValue?.split(delimiter) ?? []) {
+		if (!isAbsolute(directory)) continue;
+		const candidate = join(directory, "bwrap");
+		try {
+			accessSync(candidate, constants.X_OK);
+			const path = realpathSync(candidate);
+			if (lstatSync(path).isFile()) return path;
+		} catch {
+			// Continue to the next PATH entry.
+		}
+	}
+	throw new Error("Bubblewrap is required on Linux but was not found in PATH");
 }
 
 function arrayField(value: unknown): string[] {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,9 +12,14 @@ test.afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-test("resolves fixed executables from the exact native package", () => {
+test("resolves fixed nono and OS-provided Bubblewrap", () => {
 	const root = nativePackage("pi-extension-sandbox-linux-x64", "3.0.0");
-	const result = resolvePackagedExecutables("linux", "x64", () => join(root, "package.json"));
+	const result = resolvePackagedExecutables(
+		"linux",
+		"x64",
+		() => join(root, "package.json"),
+		join(root, "bin"),
+	);
 	assert.deepEqual(result, {
 		nonoPath: join(root, "bin", "nono"),
 		bwrapPath: join(root, "bin", "bwrap"),
@@ -35,6 +40,14 @@ test("rejects a native executable changed after packaging", () => {
 	assert.throws(
 		() => resolvePackagedExecutables("linux", "x64", () => join(root, "package.json")),
 		/checksum mismatch/,
+	);
+});
+
+test("fails closed when Bubblewrap is missing", () => {
+	const root = nativePackage("pi-extension-sandbox-linux-x64", "3.0.0");
+	assert.throws(
+		() => resolvePackagedExecutables("linux", "x64", () => join(root, "package.json"), ""),
+		/Bubblewrap is required on Linux but was not found in PATH/,
 	);
 });
 
@@ -70,10 +83,9 @@ function nativePackage(name: string, version: string): string {
 		cpu: [darwin ? "arm64" : "x64"],
 		guardian: {
 			nono: { path: "bin/nono", sha256: sha256(nono) },
-			...(darwin ? {} : { bubblewrap: { path: "bin/bwrap", sha256: sha256(bwrap) } }),
 		},
 	})}\n`);
-	return root;
+	return realpathSync(root);
 }
 
 function sha256(value: Buffer): string {

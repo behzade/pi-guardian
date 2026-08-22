@@ -2,7 +2,7 @@
 
 Fail-closed native command sandbox and explicit access policy for the Pi coding agent.
 Guardian uses nono for OS sandboxing and network enforcement. On Linux it adds a
-fixed Bubblewrap mount layer for deny-over-allow filesystem rules.
+Bubblewrap mount layer for deny-over-allow filesystem rules.
 
 > **Alpha:** nono's upstream security policy says its guarantees are not stable
 > and production use is not recommended before its 1.0 security work. Review the

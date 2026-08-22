@@ -76,24 +76,19 @@ jobs:
         with:
           node-version: 22.19.0
       - run: |
-          mkdir -p dist/download dist/extract dist/bin dist/tarballs
+          mkdir -p dist/download dist/extract dist/tarballs
           curl -fsSLo dist/download/nono.tar.gz https://github.com/nolabs-ai/nono/releases/download/v0.61.1/nono-v0.61.1-x86_64-unknown-linux-gnu.tar.gz
           echo '9186323e1deda74bda886ab57ae3cff820bc85861a9dd691b898a4d309bffa93  dist/download/nono.tar.gz' | sha256sum -c
           tar -xzf dist/download/nono.tar.gz -C dist/extract
           nono=$(find "$PWD/dist/extract" -type f -name nono -perm -111 -print -quit)
           test -n "$nono"
-          curl -fsSLo dist/download/bubblewrap.tar.xz https://github.com/containers/bubblewrap/releases/download/v0.11.2/bubblewrap-0.11.2.tar.xz
           curl -fsSLo dist/download/NONO-LICENSE https://raw.githubusercontent.com/nolabs-ai/nono/v0.61.1/LICENSE
-          curl -fsSLo dist/download/BUBBLEWRAP-COPYING https://raw.githubusercontent.com/containers/bubblewrap/v0.11.2/COPYING
-          docker run --rm -v "$PWD:/work" -w /work alpine:3.22 sh -c '
-            apk add --no-cache bash build-base libcap-dev libcap-static linux-headers meson ninja pkgconf tar xz &&
-            packaging/npm/build-static-bwrap.sh /work/dist/download/bubblewrap.tar.xz /work/dist/bin/bwrap
-          '
-          dist/bin/bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev -- /bin/true
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          command -v bwrap
           node packaging/npm/build-packages.mjs native \
             --platform linux --arch x64 --out "$PWD/dist/npm" \
-            --nono "$nono" --nono-license "$PWD/dist/download/NONO-LICENSE" \
-            --bwrap "$PWD/dist/bin/bwrap" --bwrap-license "$PWD/dist/download/BUBBLEWRAP-COPYING"
+            --nono "$nono" --nono-license "$PWD/dist/download/NONO-LICENSE"
           node packaging/npm/build-packages.mjs main --out "$PWD/dist/npm"
           npm pack ./dist/npm/pi-extension-sandbox-linux-x64 --pack-destination dist/tarballs
           npm pack ./dist/npm/pi-extension-sandbox --pack-destination dist/tarballs

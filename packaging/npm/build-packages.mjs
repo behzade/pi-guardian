@@ -25,14 +25,12 @@ const nativePackages = {
 		os: "darwin",
 		cpu: "arm64",
 		format: "mach-o-arm64",
-		requiresBwrap: false,
 	},
 	"linux:x64": {
 		name: "pi-extension-sandbox-linux-x64",
 		os: "linux",
 		cpu: "x64",
 		format: "elf-x64",
-		requiresBwrap: true,
 	},
 };
 
@@ -40,7 +38,7 @@ const [action, ...argv] = process.argv.slice(2);
 const options = parseOptions(argv);
 if (action === "main") buildMain(requiredAbsolute(options, "out"));
 else if (action === "native") buildNative(options);
-else fail("usage: build-packages.mjs main --out PATH | native --platform PLATFORM --arch ARCH --out PATH --nono PATH --nono-license PATH [--bwrap PATH --bwrap-license PATH]");
+else fail("usage: build-packages.mjs main --out PATH | native --platform PLATFORM --arch ARCH --out PATH --nono PATH --nono-license PATH");
 
 function buildMain(outputRoot) {
 	const output = resetPackageDirectory(outputRoot, sourceManifest.name);
@@ -73,32 +71,19 @@ function buildNative(options) {
 	const outputRoot = requiredAbsolute(options, "out");
 	const nono = verifiedBinary(requiredAbsolute(options, "nono"), "nono", "0.61.1", selected.format);
 	const nonoLicense = verifiedFile(requiredAbsolute(options, "nono-license"), "nono license");
-	const bwrap = selected.requiresBwrap
-		? verifiedBinary(requiredAbsolute(options, "bwrap"), "bwrap", "0.11.2", selected.format)
-		: undefined;
-	const bwrapLicense = selected.requiresBwrap
-		? verifiedFile(requiredAbsolute(options, "bwrap-license"), "Bubblewrap license")
-		: undefined;
 	verifyPortableLinkage(nono.path, selected.os);
-	if (bwrap && containsAny(bwrap.bytes, ["ld-linux", "ld-musl", "/nix/store"])) {
-		fail("Bubblewrap npm binary must be static and must not reference the Nix store");
-	}
 
 	const output = resetPackageDirectory(outputRoot, selected.name);
 	mkdirSync(join(output, "bin"));
 	mkdirSync(join(output, "LICENSES"));
 	copyExecutable(nono.path, join(output, "bin", "nono"));
 	copyFileSync(nonoLicense, join(output, "LICENSES", "NONO-APACHE-2.0.txt"));
-	if (bwrap && bwrapLicense) {
-		copyExecutable(bwrap.path, join(output, "bin", "bwrap"));
-		copyFileSync(bwrapLicense, join(output, "LICENSES", "BUBBLEWRAP-LGPL-2.0-or-later.txt"));
-	}
 	writeFileSync(join(output, "README.md"), nativeReadme(selected));
 	writeJson(join(output, "package.json"), {
 		name: selected.name,
 		version: sourceManifest.version,
-		description: `Fixed native executables for ${sourceManifest.name} on ${platform}/${arch}`,
-		license: selected.requiresBwrap ? "(Apache-2.0 AND LGPL-2.0-or-later)" : "Apache-2.0",
+		description: `Fixed nono executable for ${sourceManifest.name} on ${platform}/${arch}`,
+		license: "Apache-2.0",
 		repository: sourceManifest.repository,
 		os: [selected.os],
 		cpu: [selected.cpu],
@@ -107,7 +92,6 @@ function buildNative(options) {
 		scripts: {},
 		guardian: {
 			nono: { version: "0.61.1", sha256: nono.sha256, path: "bin/nono" },
-			...(bwrap ? { bubblewrap: { version: "0.11.2", sha256: bwrap.sha256, path: "bin/bwrap", static: true } } : {}),
 		},
 	});
 	process.stdout.write(`${output}\n`);
@@ -220,11 +204,6 @@ function writeJson(path, value) {
 
 function sha256(bytes) {
 	return createHash("sha256").update(bytes).digest("hex");
-}
-
-function containsAny(bytes, needles) {
-	const text = bytes.toString("latin1");
-	return needles.some((needle) => text.includes(needle));
 }
 
 function fail(message) {
